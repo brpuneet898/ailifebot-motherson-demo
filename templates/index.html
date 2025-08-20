@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CKM ML Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .tab-content { margin-top: 20px; }
+        .metrics-card { margin-bottom: 20px; }
+        .prediction-form { background: #f8f9fa; padding: 20px; border-radius: 8px; }
+        .model-results { margin-top: 20px; }
+        .roc-chart { max-width: 500px; margin: 20px auto; }
+        .loading-overlay { 
+            display: none; 
+            position: fixed; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            background: rgba(0,0,0,0.5); 
+            z-index: 9999; 
+        }
+        .loading-content { 
+            position: absolute; 
+            top: 50%; 
+            left: 50%; 
+            transform: translate(-50%, -50%); 
+            background: white; 
+            padding: 30px; 
+            border-radius: 10px; 
+            text-align: center; 
+            min-width: 300px;
+        }
+        .spinner { 
+            border: 4px solid #f3f3f3; 
+            border-top: 4px solid #3498db; 
+            border-radius: 50%; 
+            width: 40px; 
+            height: 40px; 
+            animation: spin 1s linear infinite; 
+            margin: 0 auto 20px;
+        }
+        @keyframes spin { 
+            0% { transform: rotate(0deg); } 
+            100% { transform: rotate(360deg); } 
+        }
+        .progress-bar-custom {
+            width: 100%;
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background-color: #007bff;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="loading-content">
+            <div class="spinner"></div>
+            <h5 id="loadingTitle">Processing...</h5>
+            <p id="loadingMessage">Please wait while we process your request.</p>
+            <div class="progress-bar-custom">
+                <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <small id="progressText">0%</small>
+        </div>
+    </div>
+
+    <div class="container-fluid">
+        <h1 class="text-center my-4">CKM Machine Learning Dashboard</h1>
+        
+        <!-- Navigation Tabs -->
+        <ul class="nav nav-tabs" id="datasetTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="lever-force-tab" data-bs-toggle="tab" data-bs-target="#lever-force" type="button" role="tab">
+                    CKM Lever Force
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="eol-machine-tab" data-bs-toggle="tab" data-bs-target="#eol-machine" type="button" role="tab">
+                    CKM EOL Machine
+                </button>
+            </li>
+        </ul>
+
+        <!-- Tab Content -->
+        <div class="tab-content" id="datasetTabsContent">
+            <!-- Lever Force Tab -->
+            <div class="tab-pane fade show active" id="lever-force" role="tabpanel">
+                <div class="row">
+                    <div class="col-md-12">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5>CKM Lever Force Dataset</h5>
+                            </div>
+                            <div class="card-body">
+                                <div id="lever-force-content">
+                                    <!-- File Upload -->
+                                    <div class="mb-3">
+                                        <label for="leverForceFile" class="form-label">Upload CSV or Excel Dataset</label>
+                                        <input class="form-control" type="file" id="leverForceFile" accept=".csv,.xlsx,.xls">
+                                        <button class="btn btn-primary mt-2" onclick="uploadFile('lever-force')">Upload & Analyze</button>
+                                    </div>
+                                    
+                                    <!-- Dataset Info -->
+                                    <div id="lever-force-info" style="display: none;">
+                                        <h6>Dataset Overview</h6>
+                                        <div id="lever-force-overview"></div>
+                                        
+                                        <h6 class="mt-3">Data Sample (First 5 rows)</h6>
+                                        <div id="lever-force-sample" class="table-responsive"></div>
+                                        
+                                        <h6 class="mt-3">Column Analysis</h6>
+                                        <div id="lever-force-columns"></div>
+                                        
+                                        <h6 class="mt-3">Missing Values</h6>
+                                        <div id="lever-force-missing"></div>
+                                        
+                                        <button class="btn btn-warning mt-2" onclick="fixMissingValues('lever-force')" id="fix-lever-force-btn">Fix Missing Values</button>
+                                        
+                                        <div id="lever-force-fixes" class="mt-3" style="display: none;"></div>
+                                        
+                                        <button class="btn btn-success mt-3" onclick="trainModels('lever-force')" id="train-lever-force-btn" style="display: none;">Train ML Models</button>
+                                        
+                                        <div id="lever-force-results" class="model-results" style="display: none;"></div>
+                                        
+                                        <div id="lever-force-prediction" class="prediction-form mt-4" style="display: none;"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- EOL Machine Tab -->
+            <div class="tab-pane fade" id="eol-machine" role="tabpanel">
+                <div class="row">
+                    <div class="col-md-12">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5>CKM EOL Machine Dataset</h5>
+                            </div>
+                            <div class="card-body">
+                                <div id="eol-machine-content">
+                                    <!-- File Upload -->
+                                    <div class="mb-3">
+                                        <label for="eolMachineFile" class="form-label">Upload CSV or Excel Dataset</label>
+                                        <input class="form-control" type="file" id="eolMachineFile" accept=".csv,.xlsx,.xls">
+                                        <button class="btn btn-primary mt-2" onclick="uploadFile('eol-machine')">Upload & Analyze</button>
+                                    </div>
+                                    
+                                    <!-- Dataset Info -->
+                                    <div id="eol-machine-info" style="display: none;">
+                                        <h6>Dataset Overview</h6>
+                                        <div id="eol-machine-overview"></div>
+                                        
+                                        <h6 class="mt-3">Data Sample (First 5 rows)</h6>
+                                        <div id="eol-machine-sample" class="table-responsive"></div>
+                                        
+                                        <h6 class="mt-3">Column Analysis</h6>
+                                        <div id="eol-machine-columns"></div>
+                                        
+                                        <h6 class="mt-3">Missing Values</h6>
+                                        <div id="eol-machine-missing"></div>
+                                        
+                                        <button class="btn btn-warning mt-2" onclick="fixMissingValues('eol-machine')" id="fix-eol-machine-btn">Fix Missing Values</button>
+                                        
+                                        <div id="eol-machine-fixes" class="mt-3" style="display: none;"></div>
+                                        
+                                        <button class="btn btn-success mt-3" onclick="trainModels('eol-machine')" id="train-eol-machine-btn" style="display: none;">Train ML Models</button>
+                                        
+                                        <div id="eol-machine-results" class="model-results" style="display: none;"></div>
+                                        
+                                        <div id="eol-machine-prediction" class="prediction-form mt-4" style="display: none;"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let currentDatasets = {};
+
+        // Loading overlay functions
+        function showLoading(title, message) {
+            document.getElementById('loadingTitle').textContent = title;
+            document.getElementById('loadingMessage').textContent = message;
+            document.getElementById('progressFill').style.width = '0%';
+            document.getElementById('progressText').textContent = '0%';
+            document.getElementById('loadingOverlay').style.display = 'block';
+        }
+
+        function updateProgress(percentage, message = null) {
+            document.getElementById('progressFill').style.width = percentage + '%';
+            document.getElementById('progressText').textContent = percentage + '%';
+            if (message) {
+                document.getElementById('loadingMessage').textContent = message;
+            }
+        }
+
+        function hideLoading() {
+            document.getElementById('loadingOverlay').style.display = 'none';
+        }
+
+        // Simulate progress for operations without real progress tracking
+        function simulateProgress(duration, callback) {
+            let progress = 0;
+            const interval = setInterval(() => {
+                progress += Math.random() * 15;
+                if (progress > 90) progress = 90;
+                updateProgress(Math.round(progress));
+                
+                if (progress >= 90) {
+                    clearInterval(interval);
+                    if (callback) callback();
+                }
+            }, duration / 10);
+            return interval;
+        }
+
+        function uploadFile(datasetType) {
+            console.log('=== UPLOAD FUNCTION STARTED ===');
+            console.log('Dataset type:', datasetType);
+            
+            const fileInput = document.getElementById(datasetType === 'lever-force' ? 'leverForceFile' : 'eolMachineFile');
+            console.log('File input element:', fileInput);
+            
+            const file = fileInput.files[0];
+            console.log('Selected file:', file);
+            
+            if (!file) {
+                console.log('ERROR: No file selected');
+                alert('Please select a file first');
+                return;
+            }
+
+            // Show loading overlay
+            showLoading('Uploading Dataset', `Uploading and analyzing ${file.name}...`);
+            const progressInterval = simulateProgress(3000);
+
+            console.log('File details:');
+            console.log('- Name:', file.name);
+            console.log('- Size:', file.size, 'bytes');
+            console.log('- Type:', file.type);
+            console.log('- Last modified:', file.lastModified);
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('dataset_type', datasetType);
+            
+            console.log('FormData created with:');
+            console.log('- file:', file);
+            console.log('- dataset_type:', datasetType);
+
+            console.log('Starting fetch request...');
+            fetch('/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                console.log('Response received:', response);
+                console.log('Response status:', response.status);
+                console.log('Response ok:', response.ok);
+                console.log('Response headers:', response.headers);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                return response.json();
+            })
+            .then(data => {
+                clearInterval(progressInterval);
+                updateProgress(100, 'Upload completed!');
+                
+                setTimeout(() => {
+                    hideLoading();
+                    console.log('Response data:', data);
+                    
+                    if (data.success) {
+                        console.log('Upload successful!');
+                        currentDatasets[datasetType] = data;
+                        displayDatasetInfo(datasetType, data);
+                    } else {
+                        console.log('Upload failed with error:', data.error);
+                        alert('Error: ' + data.error);
+                    }
+                }, 500);
+            })
+            .catch(error => {
+                clearInterval(progressInterval);
+                hideLoading();
+                console.error('=== FETCH ERROR ===');
+                console.error('Error type:', error.name);
+                console.error('Error message:', error.message);
+                console.error('Full error:', error);
+                console.error('Stack trace:', error.stack);
+                alert('An error occurred while uploading the file: ' + error.message);
+            });
+        }
+
+        function displayDatasetInfo(datasetType, data) {
+            const infoDiv = document.getElementById(`${datasetType}-info`);
+            infoDiv.style.display = 'block';
+
+            // Overview
+            document.getElementById(`${datasetType}-overview`).innerHTML = `
+                <div class="alert alert-info">
+                    <strong>Total Rows:</strong> ${data.total_rows}<br>
+                    <strong>Total Columns:</strong> ${data.columns.length}
+                </div>
+            `;
+
+            // Sample data
+            let tableHtml = '<table class="table table-striped table-sm"><thead><tr>';
+            data.columns.forEach(col => {
+                tableHtml += `<th>${col}</th>`;
+            });
+            tableHtml += '</tr></thead><tbody>';
+            
+            data.head_data.forEach(row => {
+                tableHtml += '<tr>';
+                data.columns.forEach(col => {
+                    tableHtml += `<td>${row[col] || 'N/A'}</td>`;
+                });
+                tableHtml += '</tr>';
+            });
+            tableHtml += '</tbody></table>';
+            
+            document.getElementById(`${datasetType}-sample`).innerHTML = tableHtml;
+
+            // Column analysis
+            document.getElementById(`${datasetType}-columns`).innerHTML = `
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">Numerical Columns (${data.numerical_cols.length})</div>
+                            <div class="card-body">
+                                ${data.numerical_cols.map(col => `<span class="badge bg-primary me-1">${col}</span>`).join('')}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">Categorical Columns (${data.categorical_cols.length})</div>
+                            <div class="card-body">
+                                ${data.categorical_cols.map(col => `<span class="badge bg-secondary me-1">${col}</span>`).join('')}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // Missing values
+            const missingCount = Object.keys(data.missing_values).length;
+            if (missingCount > 0) {
+                let missingHtml = '<div class="alert alert-warning"><strong>Missing Values Found:</strong><ul>';
+                Object.entries(data.missing_values).forEach(([col, count]) => {
+                    missingHtml += `<li>${col}: ${count} missing values</li>`;
+                });
+                missingHtml += '</ul></div>';
+                document.getElementById(`${datasetType}-missing`).innerHTML = missingHtml;
+            } else {
+                document.getElementById(`${datasetType}-missing`).innerHTML = '<div class="alert alert-success">No missing values found!</div>';
+                document.getElementById(`train-${datasetType}-btn`).style.display = 'inline-block';
+            }
+        }
+
+        function fixMissingValues(datasetType) {
+            // Show loading overlay
+            showLoading('Fixing Missing Values', 'Analyzing and fixing missing values in your dataset...');
+            const progressInterval = simulateProgress(2000);
+
+            fetch('/fix_missing', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    dataset_type: datasetType
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                clearInterval(progressInterval);
+                updateProgress(100, 'Missing values fixed!');
+                
+                setTimeout(() => {
+                    hideLoading();
+                    
+                    if (data.success) {
+                        let fixesHtml = '<div class="alert alert-success"><strong>' + data.message + '</strong><ul>';
+                        Object.entries(data.fixes_applied).forEach(([col, fix]) => {
+                            fixesHtml += `<li>${col}: ${fix}</li>`;
+                        });
+                        fixesHtml += '</ul></div>';
+                        
+                        document.getElementById(`${datasetType}-fixes`).innerHTML = fixesHtml;
+                        document.getElementById(`${datasetType}-fixes`).style.display = 'block';
+                        document.getElementById(`fix-${datasetType}-btn`).style.display = 'none';
+                        document.getElementById(`train-${datasetType}-btn`).style.display = 'inline-block';
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                }, 500);
+            })
+            .catch(error => {
+                clearInterval(progressInterval);
+                hideLoading();
+                console.error('Error:', error);
+                alert('An error occurred while fixing missing values: ' + error.message);
+            });
+        }
+
+        function trainModels(datasetType) {
+            // Show loading overlay
+            showLoading('Training ML Models', 'Training Random Forest, Logistic Regression, and SVM models...');
+            
+            // Simulate more detailed progress for model training
+            let progress = 0;
+            const messages = [
+                'Preparing data for training...',
+                'Training Random Forest model...',
+                'Training Logistic Regression model...',
+                'Training SVM model...',
+                'Calculating performance metrics...',
+                'Generating ROC curves...',
+                'Finalizing results...'
+            ];
+            
+            let messageIndex = 0;
+            const progressInterval = setInterval(() => {
+                progress += Math.random() * 12;
+                if (progress > 90) progress = 90;
+                
+                if (progress > messageIndex * 13 && messageIndex < messages.length) {
+                    updateProgress(Math.round(progress), messages[messageIndex]);
+                    messageIndex++;
+                } else {
+                    updateProgress(Math.round(progress));
+                }
+            }, 800);
+
+            document.getElementById(`train-${datasetType}-btn`).innerHTML = 'Training Models...';
+            document.getElementById(`train-${datasetType}-btn`).disabled = true;
+
+            fetch('/train_models', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    dataset_type: datasetType
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                clearInterval(progressInterval);
+                updateProgress(100, 'Models trained successfully!');
+                
+                setTimeout(() => {
+                    hideLoading();
+                    
+                    if (data.success) {
+                        displayModelResults(datasetType, data);
+                        createPredictionForm(datasetType, data.feature_columns);
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                    document.getElementById(`train-${datasetType}-btn`).innerHTML = 'Train ML Models';
+                    document.getElementById(`train-${datasetType}-btn`).disabled = false;
+                }, 500);
+            })
+            .catch(error => {
+                clearInterval(progressInterval);
+                hideLoading();
+                console.error('Error:', error);
+                alert('An error occurred while training models: ' + error.message);
+                document.getElementById(`train-${datasetType}-btn`).innerHTML = 'Train ML Models';
+                document.getElementById(`train-${datasetType}-btn`).disabled = false;
+            });
+        }
+
+        function displayModelResults(datasetType, data) {
+            let resultsHtml = '<h6>Model Performance Results</h6>';
+            
+            Object.entries(data.results).forEach(([modelName, metrics]) => {
+                resultsHtml += `
+                    <div class="card metrics-card">
+                        <div class="card-header">
+                            <h6>${modelName}</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-3">
+                                    <div class="text-center">
+                                        <h5 class="text-primary">${(metrics.f1_score * 100).toFixed(2)}%</h5>
+                                        <small>F1 Score</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="text-center">
+                                        <h5 class="text-success">${(metrics.precision * 100).toFixed(2)}%</h5>
+                                        <small>Precision</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="text-center">
+                                        <h5 class="text-warning">${(metrics.recall * 100).toFixed(2)}%</h5>
+                                        <small>Recall</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="text-center">
+                                        <h5 class="text-info">${metrics.roc_auc ? (metrics.roc_auc * 100).toFixed(2) + '%' : 'N/A'}</h5>
+                                        <small>ROC AUC</small>
+                                    </div>
+                                </div>
+                            </div>
+                            ${metrics.roc_data ? `
+                                <div class="roc-chart">
+                                    <canvas id="roc-${datasetType}-${modelName.replace(/\s+/g, '-').toLowerCase()}"></canvas>
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                `;
+            });
+
+            document.getElementById(`${datasetType}-results`).innerHTML = resultsHtml;
+            document.getElementById(`${datasetType}-results`).style.display = 'block';
+
+            // Draw ROC curves
+            Object.entries(data.results).forEach(([modelName, metrics]) => {
+                if (metrics.roc_data) {
+                    drawROCCurve(datasetType, modelName, metrics.roc_data);
+                }
+            });
+        }
+
+        function drawROCCurve(datasetType, modelName, rocData) {
+            const canvasId = `roc-${datasetType}-${modelName.replace(/\s+/g, '-').toLowerCase()}`;
+            const ctx = document.getElementById(canvasId).getContext('2d');
+            
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [{
+                        label: 'ROC Curve',
+                        data: rocData.fpr.map((fpr, i) => ({x: fpr, y: rocData.tpr[i]})),
+                        borderColor: 'rgb(75, 192, 192)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        fill: false
+                    }, {
+                        label: 'Random Classifier',
+                        data: [{x: 0, y: 0}, {x: 1, y: 1}],
+                        borderColor: 'rgb(255, 99, 132)',
+                        borderDash: [5, 5],
+                        fill: false
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: `ROC Curve - ${modelName}`
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'False Positive Rate'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'True Positive Rate'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function createPredictionForm(datasetType, featureColumns) {
+            let formHtml = `
+                <h6>Real-time Prediction</h6>
+                <div class="row">
+                    <div class="col-md-6">
+                        <label for="model-select-${datasetType}" class="form-label">Select Model:</label>
+                        <select class="form-select" id="model-select-${datasetType}">
+                            <option value="Random Forest">Random Forest</option>
+                            <option value="Logistic Regression">Logistic Regression</option>
+                            <option value="SVM">SVM</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="row mt-3">
+            `;
+
+            // Create input fields for each feature (excluding RESULT)
+            const inputFeatures = featureColumns.filter(col => col !== 'RESULT');
+            inputFeatures.forEach((col, index) => {
+                if (index % 3 === 0 && index > 0) {
+                    formHtml += '</div><div class="row mt-2">';
+                }
+                formHtml += `
+                    <div class="col-md-4">
+                        <label for="${col}-${datasetType}" class="form-label">${col}:</label>
+                        <input type="number" class="form-control" id="${col}-${datasetType}" step="any" value="0">
+                    </div>
+                `;
+            });
+
+            formHtml += `
+                </div>
+                <div class="mt-3">
+                    <button class="btn btn-primary" onclick="makePrediction('${datasetType}')">Predict</button>
+                </div>
+                <div id="prediction-result-${datasetType}" class="mt-3"></div>
+            `;
+
+            document.getElementById(`${datasetType}-prediction`).innerHTML = formHtml;
+            document.getElementById(`${datasetType}-prediction`).style.display = 'block';
+        }
+
+        function makePrediction(datasetType) {
+            const modelName = document.getElementById(`model-select-${datasetType}`).value;
+            const inputData = {};
+
+            // Get all input values
+            const inputs = document.querySelectorAll(`#${datasetType}-prediction input[type="number"]`);
+            inputs.forEach(input => {
+                const fieldName = input.id.replace(`-${datasetType}`, '');
+                inputData[fieldName] = parseFloat(input.value) || 0;
+            });
+
+            fetch('/predict', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    dataset_type: datasetType,
+                    model_name: modelName,
+                    input_data: inputData
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    let resultHtml = `
+                        <div class="alert alert-info">
+                            <h6>Prediction Result:</h6>
+                            <strong>Predicted RESULT: ${data.prediction}</strong>
+                    `;
+                    
+                    if (data.prediction_probability) {
+                        resultHtml += `
+                            <br><strong>Prediction Probabilities:</strong>
+                            <ul>
+                                ${data.prediction_probability.map((prob, idx) => 
+                                    `<li>Class ${idx}: ${(prob * 100).toFixed(2)}%</li>`
+                                ).join('')}
+                            </ul>
+                        `;
+                    }
+                    
+                    resultHtml += '</div>';
+                    document.getElementById(`prediction-result-${datasetType}`).innerHTML = resultHtml;
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while making prediction');
+            });
+        }
+    </script>
+</body>
+</html>
