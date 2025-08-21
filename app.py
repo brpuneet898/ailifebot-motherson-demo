@@ -6,9 +6,12 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report, f1_score, precision_score, recall_score, roc_auc_score, roc_curve
+from sklearn.metrics import (
+    f1_score, precision_score, recall_score, roc_auc_score, roc_curve
+)
 import pickle
 import os
+import re
 import json
 from werkzeug.utils import secure_filename
 import warnings
@@ -18,317 +21,298 @@ warnings.filterwarnings('ignore')
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
 
-# Create uploads directory if it doesn't exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
+# -------------------------
+# Helpers
+# -------------------------
+def load_dataframe(path: str) -> pd.DataFrame:
+    if path.endswith('.csv'):
+        return pd.read_csv(path)
+    elif path.endswith('.xlsx'):
+        return pd.read_excel(path, engine='openpyxl')
+    elif path.endswith('.xls'):
+        return pd.read_excel(path, engine='xlrd')
+    else:
+        raise ValueError('Unsupported file format')
+
+def save_dataframe_csv(df: pd.DataFrame, base_path: str, suffix: str) -> str:
+    root, _ = os.path.splitext(base_path)
+    out_path = f"{root}{suffix}.csv"
+    df.to_csv(out_path, index=False)
+    return out_path
+
+ID_NAME_REGEX = re.compile(
+    r"(?:^|[_-])(id|uuid|guid|serial|serialno|partserial|barcode|qrcode|scan|scancode|"
+    r"code$|jobcode|stationcode|cellcode|tenantcode|baseorgcode|fgqr|hash|"
+    r"created|createdon|updated|timestamp|time|date|eoldate)(?:$|[_-])",
+    re.IGNORECASE
+)
+
+def suggest_drop_columns(df: pd.DataFrame):
+    """Heuristics to suggest ID-like / non-informative columns."""
+    n = len(df)
+    suggestions = []
+    for col in df.columns:
+        s = df[col]
+        dtype = str(s.dtype)
+        nunique = s.nunique(dropna=True)
+        unique_ratio = (nunique / max(1, n))
+        name_match = bool(ID_NAME_REGEX.search(col))
+        avg_len = float(s.astype(str).str.len().mean()) if s.dtype == 'object' else None
+        looks_long_token = (avg_len is not None and avg_len >= 12)
+
+        reason_parts = []
+        score = 0.0
+
+        if name_match:
+            reason_parts.append("name looks like ID/code/time")
+            score += 2.0
+        if unique_ratio >= 0.95:
+            reason_parts.append(f"very high uniqueness ({unique_ratio:.2f})")
+            score += 1.5
+        if dtype == 'object' and looks_long_token:
+            reason_parts.append(f"long string tokens (avg len ~{avg_len:.0f})")
+            score += 0.7
+        # Monotonic increasing ints often are row IDs
+        if pd.api.types.is_integer_dtype(s) and n > 3:
+            try:
+                if s.is_monotonic_increasing and unique_ratio > 0.9:
+                    reason_parts.append("monotonic increasing index-like")
+                    score += 0.5
+            except Exception:
+                pass
+
+        if score >= 1.5:
+            suggestions.append({
+                "column": col,
+                "dtype": dtype,
+                "unique_ratio": round(unique_ratio, 4),
+                "reason": ", ".join(reason_parts),
+                "score": round(score, 3)
+            })
+
+    # Sort highest score first
+    suggestions.sort(key=lambda x: x["score"], reverse=True)
+    return suggestions
+
+# -------------------------
+# Routes
+# -------------------------
 @app.route('/')
 def index():
     return render_template('index.html')
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    print("=== UPLOAD FUNCTION STARTED ===")
-    print(f"Request method: {request.method}")
-    print(f"Request files: {request.files}")
-    print(f"Request form: {request.form}")
-    
     if 'file' not in request.files:
-        print("ERROR: No file in request.files")
         return jsonify({'error': 'No file selected'})
-    
+
     file = request.files['file']
     dataset_type = request.form.get('dataset_type')
-    
-    print(f"File object: {file}")
-    print(f"File filename: {file.filename}")
-    print(f"Dataset type: {dataset_type}")
-    
+
     if file.filename == '':
-        print("ERROR: Empty filename")
         return jsonify({'error': 'No file selected'})
-    
-    print(f"File extension check: {file.filename.endswith('.csv')} | {file.filename.endswith('.xlsx')} | {file.filename.endswith('.xls')}")
-    
-    if file and (file.filename.endswith('.csv') or file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        
-        print(f"Secure filename: {filename}")
-        print(f"Full filepath: {filepath}")
-        print(f"Upload folder exists: {os.path.exists(app.config['UPLOAD_FOLDER'])}")
-        
-        try:
-            file.save(filepath)
-            print(f"File saved successfully to: {filepath}")
-            print(f"File exists after save: {os.path.exists(filepath)}")
-            print(f"File size: {os.path.getsize(filepath)} bytes")
-        except Exception as save_error:
-            print(f"ERROR saving file: {str(save_error)}")
-            print(f"Save error traceback: {traceback.format_exc()}")
-            return jsonify({'error': f'Error saving file: {str(save_error)}'})
-        
-        # Load and analyze the dataset
-        try:
-            print("=== STARTING FILE READING ===")
-            
-            # Handle both CSV and Excel files
-            if filename.endswith('.csv'):
-                print("Reading as CSV file...")
-                df = pd.read_csv(filepath)
-                print("CSV file loaded successfully")
-            elif filename.endswith('.xlsx'):
-                print("Reading as XLSX file...")
-                df_preview = pd.read_excel(filepath, engine='openpyxl')
-                df = df_preview
-            elif filename.endswith('.xls'):
-                print("Reading as XLS file...")
-                df = pd.read_excel(filepath, engine='xlrd')
-                print("XLS file loaded successfully")
-            
-            print(f"Dataset shape: {df.shape}")
-            print(f"Dataset columns: {df.columns.tolist()}")
-            print(f"Dataset dtypes:\n{df.dtypes}")
-            print(f"First row data:\n{df.head(1)}")
-            
-            # Store dataset info in session
-            print("=== STORING SESSION DATA ===")
-            session[f'{dataset_type}_data'] = filepath
-            session[f'{dataset_type}_columns'] = df.columns.tolist()
-            print(f"Session data stored for {dataset_type}")
-            
-            # Get basic info
-            print("=== PREPARING RESPONSE DATA ===")
-            # Replace NaN values with None (which becomes null in JSON)
-            df_head = df.head().fillna('')  # Replace NaN with empty string for display
-            head_data = df_head.to_dict('records')
-            print(f"Head data prepared: {len(head_data)} records")
-            print(f"Sample head data: {head_data[0] if head_data else 'No data'}")
-            
-            # Analyze columns
-            categorical_cols = []
-            numerical_cols = []
-            
-            for col in df.columns:
-                print(f"Column '{col}' has dtype: {df[col].dtype}")
-                if df[col].dtype in ['object', 'category']:
-                    categorical_cols.append(col)
-                    print(f"  -> Added to categorical")
-                else:
-                    numerical_cols.append(col)
-                    print(f"  -> Added to numerical")
-            
-            print(f"Categorical columns: {categorical_cols}")
-            print(f"Numerical columns: {numerical_cols}")
-            
-            # Check for missing values
-            print("=== CHECKING MISSING VALUES ===")
-            missing_info = df.isnull().sum().to_dict()
-            # Convert numpy int64 to regular int to avoid JSON serialization issues
-            missing_cols = {k: int(v) for k, v in missing_info.items() if v > 0}
-            print(f"Missing values info: {missing_cols}")
-            
-            response_data = {
-                'success': True,
-                'head_data': head_data,
-                'columns': df.columns.tolist(),
-                'categorical_cols': categorical_cols,
-                'numerical_cols': numerical_cols,
-                'missing_values': missing_cols,
-                'total_rows': int(len(df)),  # Ensure it's a regular int
-                'dataset_type': dataset_type
-            }
-            
-            print("=== RESPONSE DATA PREPARED ===")
-            print(f"Response keys: {response_data.keys()}")
-            print(f"Total rows: {response_data['total_rows']}")
-            
-            # Test JSON serialization before returning
-            try:
-                import json
-                json_test = json.dumps(response_data)
-                print("JSON serialization test: PASSED")
-            except Exception as json_error:
-                print(f"JSON serialization test: FAILED - {json_error}")
-                # If JSON serialization fails, try to fix the data
-                print("Attempting to fix JSON serialization issues...")
-                
-                # Convert any remaining problematic values
-                def clean_for_json(obj):
-                    if isinstance(obj, dict):
-                        return {k: clean_for_json(v) for k, v in obj.items()}
-                    elif isinstance(obj, list):
-                        return [clean_for_json(v) for v in obj]
-                    elif pd.isna(obj):
-                        return None
-                    elif isinstance(obj, (np.integer, np.floating)):
-                        return obj.item()
-                    else:
-                        return obj
-                
-                response_data = clean_for_json(response_data)
-                print("Data cleaned for JSON serialization")
-            
-            print("=== RETURNING SUCCESS RESPONSE ===")
-            
-            return jsonify(response_data)
-            
-        except Exception as e:
-            print(f"=== ERROR PROCESSING FILE ===")
-            print(f"Error type: {type(e).__name__}")
-            print(f"Error message: {str(e)}")
-            print(f"Full traceback:\n{traceback.format_exc()}")
-            return jsonify({'error': f'Error processing file: {str(e)}. Please check if the file is not corrupted and contains valid data.'})
-    
-    print("ERROR: Invalid file format")
-    return jsonify({'error': 'Invalid file format. Please upload a CSV (.csv) or Excel (.xlsx, .xls) file.'})
+
+    if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
+        return jsonify({'error': 'Invalid file format. Please upload CSV/XLSX/XLS'})
+
+    filename = secure_filename(file.filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
+    try:
+        file.save(filepath)
+    except Exception as save_error:
+        return jsonify({'error': f'Error saving file: {str(save_error)}'})
+
+    try:
+        df = load_dataframe(filepath)
+
+        # Reset/clear any prior state for this dataset
+        session[f'{dataset_type}_data'] = filepath
+        session[f'{dataset_type}_dropped_data'] = None
+        session[f'{dataset_type}_dropped_columns'] = []
+        session[f'{dataset_type}_drop_confirmed'] = False
+        session[f'{dataset_type}_cleaned_data'] = None
+        session[f'{dataset_type}_models_dir'] = None
+        session[f'{dataset_type}_feature_columns'] = None
+        session[f'{dataset_type}_categorical_cols'] = None
+
+        # Prepare response
+        df_head = df.head()
+        head_data = json.loads(df_head.to_json(orient='records', date_format='iso'))
+
+        categorical_cols, numerical_cols = [], []
+        for col in df.columns:
+            if df[col].dtype in ['object', 'category']:
+                categorical_cols.append(col)
+            else:
+                numerical_cols.append(col)
+
+        missing_info = df.isnull().sum().to_dict()
+        missing_cols = {k: int(v) for k, v in missing_info.items() if v > 0}
+
+        # NEW: drop suggestions
+        drop_suggestions = suggest_drop_columns(df)
+
+        # Make JSON-able
+        response_data = {
+            'success': True,
+            'head_data': head_data,
+            'columns': df.columns.tolist(),
+            'categorical_cols': categorical_cols,
+            'numerical_cols': numerical_cols,
+            'missing_values': missing_cols,
+            'total_rows': int(len(df)),
+            'dataset_type': dataset_type,
+            'drop_suggestions': drop_suggestions  # <--- NEW
+        }
+        json.dumps(response_data)  # sanity
+        return jsonify(response_data)
+
+    except Exception as e:
+        return jsonify({'error': f'Error processing file: {str(e)}. Please check the file.'})
+
+@app.route('/drop_columns', methods=['POST'])
+def drop_columns():
+    """
+    Body:
+      {
+        "dataset_type": "lever-force" | "eol-machine",
+        "columns": ["Id", "ScanCode", ...]   // may be empty to confirm NONE
+      }
+    """
+    data = request.get_json(silent=True) or {}
+    dataset_type = data.get('dataset_type')
+    cols_to_drop = data.get('columns', [])
+
+    original_path = session.get(f'{dataset_type}_data')
+    if not original_path or not os.path.exists(original_path):
+        return jsonify({'error': 'Dataset not found. Please upload again.'})
+
+    try:
+        df = load_dataframe(original_path)
+        existing = [c for c in cols_to_drop if c in df.columns]
+        missing = [c for c in cols_to_drop if c not in df.columns]
+
+        if existing:
+            df = df.drop(columns=existing)
+
+        # Always produce a working dropped file (even if no drops), so downstream is consistent
+        dropped_path = save_dataframe_csv(df, original_path, '_dropped')
+        session[f'{dataset_type}_dropped_data'] = dropped_path
+        session[f'{dataset_type}_dropped_columns'] = existing
+        session[f'{dataset_type}_drop_confirmed'] = True
+        # Reset any cleaned/model state after a new drop action
+        session[f'{dataset_type}_cleaned_data'] = None
+        session[f'{dataset_type}_models_dir'] = None
+        session[f'{dataset_type}_feature_columns'] = None
+        session[f'{dataset_type}_categorical_cols'] = None
+
+        return jsonify({
+            'success': True,
+            'message': 'Columns dropped and working file prepared' if existing else 'No columns dropped (confirmed)',
+            'dropped_columns': existing,
+            'not_found': missing,
+            'working_file': os.path.basename(dropped_path),
+            'remaining_columns': df.columns.tolist(),
+            'shape': [int(df.shape[0]), int(df.shape[1])]
+        })
+    except Exception as e:
+        return jsonify({'error': f'Error dropping columns: {str(e)}'})
 
 @app.route('/fix_missing', methods=['POST'])
 def fix_missing_values():
-    print("=== FIX MISSING VALUES STARTED ===")
     dataset_type = request.json.get('dataset_type')
-    filepath = session.get(f'{dataset_type}_data')
+
+    # Gate: must confirm /drop_columns first (even with empty list)
+    drop_confirmed = session.get(f'{dataset_type}_drop_confirmed', False)
+    if not drop_confirmed:
+        return jsonify({'error': 'Please review/drop columns first. Call /drop_columns with your list (or [] to confirm none).'})
     
-    print(f"Dataset type: {dataset_type}")
-    print(f"Filepath: {filepath}")
-    
+    # Use the dropped working file if available; else fallback to original (shouldn't happen due to gate)
+    filepath = session.get(f'{dataset_type}_dropped_data') or session.get(f'{dataset_type}_data')
     if not filepath or not os.path.exists(filepath):
-        print("ERROR: Dataset file not found")
-        return jsonify({'error': 'Dataset not found'})
-    
+        return jsonify({'error': 'Working dataset not found. Please upload and drop columns again.'})
+
     try:
-        print("Loading dataset...")
-        # Handle both CSV and Excel files based on file extension
-        if filepath.endswith('.csv'):
-            df = pd.read_csv(filepath)
-            print("CSV file loaded for fixing missing values")
-        elif filepath.endswith('.xlsx'):
-            df = pd.read_excel(filepath, engine='openpyxl')
-            print("XLSX file loaded for fixing missing values")
-        elif filepath.endswith('.xls'):
-            df = pd.read_excel(filepath, engine='xlrd')
-            print("XLS file loaded for fixing missing values")
-        else:
-            return jsonify({'error': 'Unsupported file format'})
-        
-        print(f"Dataset loaded. Shape: {df.shape}")
+        df = load_dataframe(filepath)
+
         original_missing = df.isnull().sum().to_dict()
         fixes_applied = {}
-        
+
         for col in df.columns:
-            missing_count = df[col].isnull().sum()
-            if missing_count > 0:
+            miss = df[col].isnull().sum()
+            if miss > 0:
                 if df[col].dtype in ['object', 'category']:
-                    # Fill categorical with mode
                     mode_val = df[col].mode().iloc[0] if not df[col].mode().empty else 'Unknown'
                     df[col].fillna(mode_val, inplace=True)
-                    fixes_applied[col] = f"Filled {missing_count} missing values with mode: '{mode_val}'"
+                    fixes_applied[col] = f"Filled {miss} missing with mode: '{mode_val}'"
                 else:
-                    # Fill numerical with median
                     median_val = df[col].median()
+                    if pd.isna(median_val):
+                        median_val = 0
                     df[col].fillna(median_val, inplace=True)
-                    fixes_applied[col] = f"Filled {missing_count} missing values with median: {median_val:.2f}"
-        
-        # Save cleaned dataset
-        if filepath.endswith(('.csv', '.xlsx', '.xls')):
-            cleaned_filepath = os.path.splitext(filepath)[0] + '_cleaned.csv'
-            df.to_csv(cleaned_filepath, index=False)
-        
+                    fixes_applied[col] = f"Filled {miss} missing with median: {median_val:.4f}"
+
+        cleaned_filepath = save_dataframe_csv(df, filepath, '_cleaned')
         session[f'{dataset_type}_cleaned_data'] = cleaned_filepath
-        print(f"Cleaned dataset saved to: {cleaned_filepath}")
-        
         return jsonify({
             'success': True,
             'fixes_applied': fixes_applied,
-            'message': f'Fixed missing values in {len(fixes_applied)} columns'
+            'message': f"Fixed missing values in {len(fixes_applied)} columns"
         })
-        
     except Exception as e:
         return jsonify({'error': f'Error fixing missing values: {str(e)}'})
 
 @app.route('/train_models', methods=['POST'])
 def train_models():
-    print("=== TRAIN MODELS STARTED ===")
     dataset_type = request.json.get('dataset_type')
     cleaned_filepath = session.get(f'{dataset_type}_cleaned_data')
-    
-    print(f"Dataset type: {dataset_type}")
-    print(f"Cleaned filepath: {cleaned_filepath}")
-    
+
     if not cleaned_filepath or not os.path.exists(cleaned_filepath):
-        print("ERROR: Cleaned dataset not found")
-        return jsonify({'error': 'Cleaned dataset not found'})
-    
+        return jsonify({'error': 'Cleaned dataset not found. Please fix missing values first.'})
+
     try:
-        print("Loading cleaned dataset...")
-        # Handle both CSV and Excel files based on file extension
-        if cleaned_filepath.endswith('.csv'):
-            df = pd.read_csv(cleaned_filepath)
-            print("CSV file loaded for training")
-        elif cleaned_filepath.endswith('.xlsx'):
-            df = pd.read_excel(cleaned_filepath, engine='openpyxl')
-            print("XLSX file loaded for training")
-        else:
-            return jsonify({'error': 'Unsupported cleaned file format'})
-        
+        df = load_dataframe(cleaned_filepath)
+        print("CSV file loaded for training" if cleaned_filepath.endswith('.csv') else "XLSX file loaded for training")
         print(f"Dataset loaded for training. Shape: {df.shape}")
         print(f"Available columns: {df.columns.tolist()}")
-        
-        # Check if RESULT column exists (case-insensitive)
+
+        # Identify target column (RESULT-ish)
         result_column = None
-        possible_result_columns = ['RESULT', 'Result', 'result']
-        
+        possible = ['RESULT', 'Result', 'result']
         for col in df.columns:
-            if col in possible_result_columns:
+            if col in possible or 'result' in col.lower():
                 result_column = col
-                print(f"Found target column: {result_column}")
                 break
-            # Also check for columns containing 'result' (case-insensitive)
-            elif 'result' in col.lower():
-                result_column = col
-                print(f"Found target column containing 'result': {result_column}")
-                break
-        
         if result_column is None:
             available_cols = ', '.join(df.columns.tolist())
-            return jsonify({
-                'error': f'Target column not found. Looking for columns like RESULT, Result, result, TARGET, etc. Available columns: {available_cols}'
-            })
-        
-        print(f"Using '{result_column}' as target column")
-        print(f"Target column unique values: {df[result_column].unique()}")
-        print(f"Target column value counts:\n{df[result_column].value_counts()}")
-        
-        # Prepare features and target
+            return jsonify({'error': f'Target column not found. Available columns: {available_cols}'})
+
         X = df.drop([result_column], axis=1)
         y = df[result_column]
-        
-        print(f"Features shape: {X.shape}")
-        print(f"Target shape: {y.shape}")
-        print(f"Feature columns: {X.columns.tolist()}")
-        
-        # Handle categorical variables
+
+        # Encode categoricals
         categorical_cols = X.select_dtypes(include=['object', 'category']).columns
         print(f"Categorical columns to encode: {categorical_cols.tolist()}")
-        
+
         encoders = {}
         feature_metadata = {}
-
         for col in categorical_cols:
-            print(f"Encoding column '{col}' with unique values: {X[col].unique()}")
             cat = pd.Categorical(X[col])
             X[col] = cat.codes
-            print(f"After encoding, '{col}' has values: {X[col].unique()}")
-
             categories = list(cat.categories)
-            value_to_code = {v: int(i) for i, v in enumerate(categories)}
-            encoders[col] = {"categories": categories, "value_to_code": value_to_code}
-        
-        # Build metadata for ALL features (both numeric & categorical)
+            encoders[col] = {
+                "categories": categories,
+                "value_to_code": {v: int(i) for i, v in enumerate(categories)}
+            }
+
+        # Build feature metadata for UI
         for col in X.columns:
             if col in encoders:
-                # categorical
                 uniques = encoders[col]["categories"]
                 feature_metadata[col] = {
                     "type": "categorical",
@@ -336,170 +320,75 @@ def train_models():
                     "default": uniques[0] if len(uniques) > 0 else None
                 }
             else:
-                # numeric
                 col_series = df[col] if col in df.columns else X[col]
                 try:
-                    # a realistic default (median), fallback to 0
                     default_val = float(pd.to_numeric(col_series, errors='coerce').median())
                     if pd.isna(default_val):
                         default_val = 0.0
                 except Exception:
                     default_val = 0.0
-                feature_metadata[col] = {
-                    "type": "numeric",
-                    "default": default_val
-                }
-        # Check for any remaining non-numeric columns
+                feature_metadata[col] = {"type": "numeric", "default": default_val}
+
+        # Convert any lingering non-numeric to numeric or drop
         non_numeric_cols = X.select_dtypes(exclude=['number']).columns
         if len(non_numeric_cols) > 0:
-            print(f"Warning: Non-numeric columns still present: {non_numeric_cols.tolist()}")
-            # Try to convert them to numeric
             for col in non_numeric_cols:
                 try:
                     X[col] = pd.to_numeric(X[col], errors='coerce')
-                    print(f"Converted '{col}' to numeric")
                 except:
-                    print(f"Could not convert '{col}' to numeric, dropping it")
                     X = X.drop([col], axis=1)
-        
-        print(f"Final feature columns: {X.columns.tolist()}")
-        print(f"Final features shape: {X.shape}")
-        
-        # Check for NaN values in features and handle them
-        print("=== CHECKING FOR NaN VALUES IN FEATURES ===")
-        nan_counts = X.isnull().sum()
-        nan_columns = nan_counts[nan_counts > 0]
-        
-        if len(nan_columns) > 0:
-            print(f"Found NaN values in features:")
-            for col, count in nan_columns.items():
-                print(f"  {col}: {count} NaN values")
-            
-            print("Filling NaN values in features...")
-            # Fill NaN values in numeric columns with median
+
+        # Handle NaNs
+        if X.isnull().values.any():
             numeric_cols = X.select_dtypes(include=['number']).columns
             for col in numeric_cols:
                 if X[col].isnull().any():
-                    median_val = X[col].median()
-                    if pd.isna(median_val):  # If median is also NaN, use 0
-                        median_val = 0
-                    X[col].fillna(median_val, inplace=True)
-                    print(f"  Filled NaN in '{col}' with median: {median_val}")
-            
-            # Double-check for any remaining NaN values
-            remaining_nans = X.isnull().sum().sum()
-            if remaining_nans > 0:
-                print(f"Warning: {remaining_nans} NaN values still remain. Filling with 0.")
+                    med = X[col].median()
+                    if pd.isna(med):
+                        med = 0
+                    X[col].fillna(med, inplace=True)
+            if X.isnull().values.any():
                 X.fillna(0, inplace=True)
-            
-            print("All NaN values in features have been handled.")
-        else:
-            print("No NaN values found in features.")
-        
-        # Final validation - ensure no NaN values remain
-        final_nan_check = X.isnull().sum().sum()
-        if final_nan_check > 0:
-            print(f"ERROR: Still have {final_nan_check} NaN values after cleaning!")
-            return jsonify({'error': f'Could not clean all NaN values from features. {final_nan_check} NaN values remain.'})
-        
-        print("✓ Features are clean and ready for training")
-        
-        # Additional validation - check for infinite values
-        inf_check = np.isinf(X.select_dtypes(include=[np.number])).sum().sum()
-        if inf_check > 0:
-            print(f"Found {inf_check} infinite values, replacing with 0")
-            X.replace([np.inf, -np.inf], 0, inplace=True)
-        
-        # Check data types
-        print(f"Feature data types:\n{X.dtypes}")
-        
-        # Ensure all features are numeric
-        for col in X.columns:
-            if not pd.api.types.is_numeric_dtype(X[col]):
-                print(f"Warning: Column '{col}' is not numeric: {X[col].dtype}")
-                try:
-                    X[col] = pd.to_numeric(X[col], errors='coerce')
-                    X[col].fillna(0, inplace=True)
-                    print(f"Converted '{col}' to numeric")
-                except:
-                    print(f"Could not convert '{col}' to numeric, dropping it")
-                    X = X.drop([col], axis=1)
-        
-        # Check if we have any features left
-        if X.shape[1] == 0:
-            return jsonify({'error': 'No valid features found after preprocessing'})
-        
-        # Check if target has valid values
-        if y.isnull().all():
-            return jsonify({'error': f'Target column "{result_column}" contains only null values'})
-        
-        # Remove rows with null target values
-        valid_indices = ~y.isnull()
-        if not valid_indices.all():
-            print(f"Removing {(~valid_indices).sum()} rows with null target values")
-            X = X[valid_indices]
-            y = y[valid_indices]
-            print(f"After removing null targets - Features: {X.shape}, Target: {y.shape}")
-        
-        # Check if we have enough data
+
+        # Remove rows with null target
+        valid_idx = ~y.isnull()
+        if not valid_idx.all():
+            X = X[valid_idx]
+            y = y[valid_idx]
+
         if len(y) < 10:
             return jsonify({'error': f'Not enough data for training. Only {len(y)} valid samples found.'})
-        
-        print(f"Target value distribution:\n{y.value_counts()}")
-        
-        # Final data summary before training
-        print("=== FINAL DATA SUMMARY BEFORE TRAINING ===")
-        print(f"Features shape: {X.shape}")
-        print(f"Target shape: {y.shape}")
-        print(f"Features data types: {X.dtypes.value_counts()}")
-        print(f"Any NaN in features: {X.isnull().any().any()}")
-        print(f"Any NaN in target: {y.isnull().any()}")
-        print(f"Any infinite values in features: {np.isinf(X.select_dtypes(include=[np.number])).any().any()}")
-        print(f"Feature value ranges:")
-        for col in X.columns[:5]:  # Show first 5 columns
-            print(f"  {col}: min={X[col].min():.3f}, max={X[col].max():.3f}, mean={X[col].mean():.3f}")
-        if X.shape[1] > 5:
-            print(f"  ... and {X.shape[1] - 5} more columns")
-        
-        # Split the data
+
+        # Train/test split
         try:
-            # Try stratified split first
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-            print("Used stratified split")
-        except ValueError as e:
-            print(f"Stratified split failed: {e}")
-            print("Using regular split without stratification")
-            # If stratified split fails (e.g., due to class imbalance), use regular split
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        
-        print(f"Training set - Features: {X_train.shape}, Target: {y_train.shape}")
-        print(f"Test set - Features: {X_test.shape}, Target: {y_test.shape}")
-        print(f"Training target distribution:\n{y_train.value_counts()}")
-        print(f"Test target distribution:\n{y_test.value_counts()}")
-        
-        # Train multiple models
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.2, random_state=42, stratify=y
+            )
+        except ValueError:
+            X_train, X_test, y_train, y_test = train_split = train_test_split(
+                X, y, test_size=0.2, random_state=42
+            )
+
+        # Models
         models = {
             'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
             'Logistic Regression': make_pipeline(
-                StandardScaler(),  
+                StandardScaler(),
                 LogisticRegression(random_state=42, max_iter=2000)
             )
-        }        
+        }
         results = {}
         trained_models = {}
-        
+
         for name, model in models.items():
-            # Train model
             model.fit(X_train, y_train)
             y_pred = model.predict(X_test)
             y_pred_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, 'predict_proba') else None
-            
-            # Calculate metrics
+
             f1 = f1_score(y_test, y_pred, average='weighted')
             precision = precision_score(y_test, y_pred, average='weighted')
             recall = recall_score(y_test, y_pred, average='weighted')
-            
-            # ROC AUC (for binary classification)
+
             try:
                 if len(np.unique(y)) == 2 and y_pred_proba is not None:
                     roc_auc = roc_auc_score(y_test, y_pred_proba)
@@ -511,7 +400,7 @@ def train_models():
             except:
                 roc_auc = None
                 roc_data = None
-            
+
             results[name] = {
                 'f1_score': f1,
                 'precision': precision,
@@ -519,32 +408,28 @@ def train_models():
                 'roc_auc': roc_auc,
                 'roc_data': roc_data
             }
-            
             trained_models[name] = model
-        
-        # Save models and feature columns
+
+        # Persist models + metadata
         models_dir = f'models_{dataset_type}'
         os.makedirs(models_dir, exist_ok=True)
-        
         for name, model in trained_models.items():
             model_filename = os.path.join(models_dir, f'{name.lower().replace(" ", "_")}.pkl')
             with open(model_filename, 'wb') as f:
                 pickle.dump(model, f)
-        
-        # Save feature columns for prediction
-        feature_columns_file = os.path.join(models_dir, 'feature_columns.json')
-        with open(feature_columns_file, 'w') as f:
+
+        with open(os.path.join(models_dir, 'feature_columns.json'), 'w') as f:
             json.dump(X.columns.tolist(), f)
-        
         with open(os.path.join(models_dir, 'encoders.json'), 'w') as f:
             json.dump(encoders, f)
         with open(os.path.join(models_dir, 'feature_metadata.json'), 'w') as f:
             json.dump(feature_metadata, f)
-        
+
         session[f'{dataset_type}_models_dir'] = models_dir
         session[f'{dataset_type}_feature_columns'] = X.columns.tolist()
-        session[f'{dataset_type}_categorical_cols'] = list(encoders.keys())  # NEW
+        session[f'{dataset_type}_categorical_cols'] = list(encoders.keys())
 
+        # Top-5 feature importance
         top_importance = {}
         try:
             rf = trained_models.get('Random Forest')
@@ -558,12 +443,8 @@ def train_models():
         try:
             lr = trained_models.get('Logistic Regression')
             if lr is not None:
-                # If it’s a pipeline, get the final step
                 from sklearn.pipeline import Pipeline
-                if isinstance(lr, Pipeline):
-                    lr_est = lr.named_steps.get('logisticregression')
-                else:
-                    lr_est = lr
+                lr_est = lr.named_steps.get('logisticregression') if isinstance(lr, Pipeline) else lr
                 if hasattr(lr_est, 'coef_'):
                     coefs = abs(lr_est.coef_[0]) if lr_est.coef_.ndim == 2 else abs(lr_est.coef_)
                     pairs = sorted(zip(X.columns.tolist(), coefs), key=lambda t: t[1], reverse=True)[:5]
@@ -575,10 +456,9 @@ def train_models():
             'success': True,
             'results': results,
             'feature_columns': X.columns.tolist(),
-            'feature_metadata': feature_metadata,        
+            'feature_metadata': feature_metadata,
             'top_feature_importance': top_importance
         })
-        
     except Exception as e:
         return jsonify({'error': f'Error training models: {str(e)}'})
 
@@ -596,43 +476,37 @@ def predict():
         return jsonify({'error': 'Models not trained yet'})
 
     try:
-        # Load the model
         model_filename = os.path.join(models_dir, f'{model_name.lower().replace(" ", "_")}.pkl')
         with open(model_filename, 'rb') as f:
             model = pickle.load(f)
 
-        # Load encoders & metadata
         encoders_path = os.path.join(models_dir, 'encoders.json')
         metadata_path = os.path.join(models_dir, 'feature_metadata.json')
-
         encoders = {}
+        feature_metadata = {}
+
         if os.path.exists(encoders_path):
             with open(encoders_path, 'r') as f:
                 encoders = json.load(f)
-
-        feature_metadata = {}
         if os.path.exists(metadata_path):
             with open(metadata_path, 'r') as f:
                 feature_metadata = json.load(f)
 
-        # Build DataFrame from input values (strings/numbers)
         input_df = pd.DataFrame([input_data])
 
-        # Ensure all expected columns exist (missing → 0)
+        # Ensure all expected columns exist
         for col in feature_columns:
             if col not in input_df.columns:
-                # For categoricals, use the default category if present; otherwise 0
                 if col in feature_metadata and feature_metadata[col].get("type") == "categorical":
                     default_cat = feature_metadata[col].get("default")
                     input_df[col] = default_cat if default_cat is not None else ""
                 else:
                     input_df[col] = 0
 
-        # Encode categoricals using saved encoders
+        # Encode categoricals
         for col in categorical_cols:
             if col in input_df.columns and col in encoders:
                 v2c = encoders[col]["value_to_code"]
-                # map value -> code; unseen → -1
                 input_df[col] = input_df[col].map(lambda v: v2c.get(str(v), v2c.get(v, -1)))
 
         # Coerce numerics
@@ -640,14 +514,11 @@ def predict():
             if col not in categorical_cols:
                 input_df[col] = pd.to_numeric(input_df[col], errors='coerce').fillna(0)
 
-        # Reorder columns to match training
         input_df = input_df[feature_columns]
 
-        # Predict
         prediction = model.predict(input_df)[0]
         prediction_proba = model.predict_proba(input_df)[0] if hasattr(model, 'predict_proba') else None
 
-        # make JSON friendly
         pred_val = int(prediction) if isinstance(prediction, (np.integer, int, np.int64)) else prediction
         proba_list = prediction_proba.tolist() if prediction_proba is not None else None
 
@@ -656,15 +527,8 @@ def predict():
             'prediction': pred_val,
             'prediction_probability': proba_list
         })
-
     except Exception as e:
         return jsonify({'error': f'Error making prediction: {str(e)}'})
 
 if __name__ == '__main__':
-    print("=== FLASK APP STARTING ===")
-    print(f"Upload folder: {app.config['UPLOAD_FOLDER']}")
-    print(f"Upload folder exists: {os.path.exists(app.config['UPLOAD_FOLDER'])}")
-    print(f"Max content length: {app.config['MAX_CONTENT_LENGTH']} bytes")
-    print(f"Secret key set: {'secret_key' in app.config}")
-    print("=== STARTING FLASK SERVER ===")
     app.run(debug=True)
