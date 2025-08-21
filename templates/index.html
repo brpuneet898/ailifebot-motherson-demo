@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CKM ML Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+  <style>
+    :root{
+      --brand:#6C2EB7;
+      --brand-2:#8a48d4;
+      --soft:#f7f3fc;
+    }
+    body{background:#fafafa;}
+    .brand-gradient{background:linear-gradient(135deg,var(--brand),var(--brand-2));}
+    .hero{
+      border-radius:18px; color:#fff; padding:24px 20px; box-shadow:0 6px 22px rgba(108,46,183,.18);
+    }
+    .stat-card{border:0; border-radius:16px; box-shadow:0 4px 16px rgba(108,46,183,.08)}
+    .stat-value{font-size:1.8rem; font-weight:700}
+    .badge-pill{border-radius:999px}
+    .section-card{border:0; border-radius:16px; box-shadow:0 3px 12px rgba(0,0,0,.06)}
+    .roc-chart{max-width:520px; margin:10px auto}
+    .loading-overlay{
+      position:fixed; inset:0; background:rgba(0,0,0,.45); display:none; z-index:9999;
+      align-items:center; justify-content:center; backdrop-filter: blur(3px);
+    }
+    .loading-box{background:#fff; padding:26px; border-radius:16px; width:min(460px,92vw); box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    .progress{height:10px}
+    .nav-pills .nav-link.active{background:var(--brand)}
+    .btn-brand{background:var(--brand); border-color:var(--brand)}
+    .btn-brand:hover{background:var(--brand-2); border-color:var(--brand-2)}
+    .pill{background:var(--soft); color:var(--brand); border:1px solid #eadff7}
+    .table thead th{background:#f3f2f8}
+    .sticky-actions{position:sticky; top:0; background:#fff; z-index:20; padding-top:8px}
+    .footer-note{color:#6b7280}
+  </style>
+</head>
+<body>
+  <!-- Loading -->
+  <div id="loadingOverlay" class="loading-overlay">
+    <div class="loading-box">
+      <div class="d-flex align-items-start gap-3">
+        <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+        <div>
+          <h5 id="loadingTitle" class="mb-1">Processing…</h5>
+          <p id="loadingMessage" class="mb-2 text-secondary">Please wait while we process your request.</p>
+          <div class="progress" role="progressbar" aria-label="progress">
+            <div id="progressFill" class="progress-bar bg-primary" style="width:0%"></div>
+          </div>
+          <small id="progressText" class="text-muted">0%</small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="container-xxl py-4">
+    <!-- Header / Hero -->
+    <div class="hero brand-gradient mb-4">
+      <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div>
+          <h1 class="h3 mb-1">CKM Machine Learning Dashboard</h1>
+          <div class="opacity-75">Upload → Drop Columns → Clean → Train → Evaluate → Predict</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Top Stats -->
+    <div class="row g-3 mb-4" id="topStats" style="display:none">
+      <div class="col-12 col-md-3">
+        <div class="card stat-card">
+          <div class="card-body">
+            <div class="small text-muted">Rows</div>
+            <div class="stat-value" id="statRows">–</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-md-3">
+        <div class="card stat-card">
+          <div class="card-body">
+            <div class="small text-muted">Columns</div>
+            <div class="stat-value" id="statCols">–</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-md-3">
+        <div class="card stat-card">
+          <div class="card-body">
+            <div class="small text-muted">Numeric</div>
+            <div class="stat-value" id="statNum">–</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-md-3">
+        <div class="card stat-card">
+          <div class="card-body">
+            <div class="small text-muted">Categorical</div>
+            <div class="stat-value" id="statCat">–</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <ul class="nav nav-pills mb-3" id="pills-tab" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="lf-tab" data-bs-toggle="pill" data-bs-target="#lf-pane" type="button" role="tab">CKM Lever Force</button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="eol-tab" data-bs-toggle="pill" data-bs-target="#eol-pane" type="button" role="tab">CKM EOL Machine</button>
+      </li>
+    </ul>
+
+    <div class="tab-content" id="pills-tabContent">
+      <!-- Lever Force Pane -->
+      <div class="tab-pane fade show active" id="lf-pane" role="tabpanel" aria-labelledby="lf-tab">
+        <div class="card section-card mb-4">
+          <div class="card-body">
+            <div class="row g-3 align-items-end">
+              <div class="col-12 col-md-6">
+                <label class="form-label fw-semibold">Upload CSV/Excel</label>
+                <input class="form-control" type="file" id="leverForceFile" accept=".csv,.xlsx,.xls" />
+              </div>
+              <div class="col-12 col-md-6 d-flex gap-2">
+                <button class="btn btn-brand" onclick="uploadFile('lever-force')">Upload & Analyze</button>
+                <button class="btn btn-outline-secondary" onclick="resetSection('lever-force')">Reset</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="lever-force-info" style="display:none">
+          <div class="row g-3">
+            <div class="col-lg-4">
+              <div class="card section-card h-100">
+                <div class="card-header bg-white fw-semibold">Dataset Overview</div>
+                <div class="card-body">
+                  <div id="lever-force-overview" class="mb-2"></div>
+                  <div class="d-flex flex-wrap gap-2">
+                    <span class="badge pill">Rows: <span id="lf-rows">–</span></span>
+                    <span class="badge pill">Cols: <span id="lf-cols">–</span></span>
+                    <span class="badge pill">Numeric: <span id="lf-num">–</span></span>
+                    <span class="badge pill">Categorical: <span id="lf-cat">–</span></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-8">
+              <div class="card section-card h-100">
+                <div class="card-header bg-white fw-semibold d-flex justify-content-between align-items-center">
+                  <span>Data Sample (First 5 rows)</span>
+                </div>
+                <div class="card-body">
+                  <div id="lever-force-sample" class="table-responsive"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="row g-3 mt-3">
+            <div class="col-lg-6">
+              <div class="card section-card h-100">
+                <div class="card-header bg-white fw-semibold">Column Analysis</div>
+                <div class="card-body">
+                  <div id="lever-force-columns"></div>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-6">
+              <div class="card section-card h-100">
+                <div class="card-header bg-white fw-semibold">Missing Values</div>
+                <div class="card-body">
+                  <div id="lever-force-missing" class="mb-2"></div>
+                  <button class="btn btn-warning" onclick="fixMissingValues('lever-force')" id="fix-lever-force-btn">Fix Missing Values</button>
+                  <div id="lever-force-fixes" class="mt-3" style="display:none"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Drop Columns Panel gets injected after Missing Values -->
+
+          <div class="card section-card mt-3">
+            <div class="card-body">
+              <div class="d-flex align-items-center justify-content-between sticky-actions">
+                <h5 class="mb-0">Modeling</h5>
+                <button class="btn btn-success" onclick="trainModels('lever-force')" id="train-lever-force-btn" style="display:none">Train ML Models</button>
+              </div>
+              <div id="lever-force-results" class="model-results mt-3" style="display:none"></div>
+              <div id="lever-force-prediction" class="prediction-form mt-4" style="display:none"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- EOL Pane -->
+      <div class="tab-pane fade" id="eol-pane" role="tabpanel" aria-labelledby="eol-tab">
+        <div class="card section-card mb-4">
+          <div class="card-body">
+            <div class="row g-3 align-items-end">
+              <div class="col-12 col-md-6">
+                <label class="form-label fw-semibold">Upload CSV/Excel</label>
+                <input class="form-control" type="file" id="eolMachineFile" accept=".csv,.xlsx,.xls" />
+              </div>
+              <div class="col-12 col-md-6 d-flex gap-2">
+                <button class="btn btn-brand" onclick="uploadFile('eol-machine')">Upload & Analyze</button>
+                <button class="btn btn-outline-secondary" onclick="resetSection('eol-machine')">Reset</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="eol-machine-info" style="display:none">
+          <div class="row g-3">
+            <div class="col-lg-4">
+              <div class="card section-card h-100">
+                <div class="card-header bg-white fw-semibold">Dataset Overview</div>
+                <div class="card-body">
+                  <div id="eol-machine-overview" class="mb-2"></div>
+                  <div class="d-flex flex-wrap gap-2">
+                    <span class="badge pill">Rows: <span id="eol-rows">–</span></span>
+                    <span class="badge pill">Cols: <span id="eol-cols">–</span></span>
+                    <span class="badge pill">Numeric: <span id="eol-num">–</span></span>
+                    <span class="badge pill">Categorical: <span id="eol-cat">–</span></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-8">
+              <div class="card section-card h-100">
+                <div class="card-header bg-white fw-semibold d-flex justify-content-between align-items-center">
+                  <span>Data Sample (First 5 rows)</span>
+                  <div class="text-muted small">Scrollable</div>
+                </div>
+                <div class="card-body">
+                  <div id="eol-machine-sample" class="table-responsive"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="row g-3 mt-3">
+            <div class="col-lg-6">
+              <div class="card section-card h-100">
+                <div class="card-header bg-white fw-semibold">Column Analysis</div>
+                <div class="card-body">
+                  <div id="eol-machine-columns"></div>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-6">
+              <div class="card section-card h-100">
+                <div class="card-header bg-white fw-semibold">Missing Values</div>
+                <div class="card-body">
+                  <div id="eol-machine-missing" class="mb-2"></div>
+                  <button class="btn btn-warning" onclick="fixMissingValues('eol-machine')" id="fix-eol-machine-btn">Fix Missing Values</button>
+                  <div id="eol-machine-fixes" class="mt-3" style="display:none"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Drop Columns Panel gets injected after Missing Values -->
+
+          <div class="card section-card mt-3">
+            <div class="card-body">
+              <div class="d-flex align-items-center justify-content-between sticky-actions">
+                <h5 class="mb-0">Modeling</h5>
+                <button class="btn btn-success" onclick="trainModels('eol-machine')" id="train-eol-machine-btn" style="display:none">Train ML Models</button>
+              </div>
+              <div id="eol-machine-results" class="model-results mt-3" style="display:none"></div>
+              <div id="eol-machine-prediction" class="prediction-form mt-4" style="display:none"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="text-center mt-4 mb-2 footer-note">Built for demos: fast, clean, and decision-first.</div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    // ===== State =====
+    let currentDatasets = {};
+
+    // ===== Loading Overlay =====
+    let __loadingWatchdog;
+    function showLoading(title, message){
+      document.getElementById('loadingTitle').textContent = title || 'Processing…';
+      document.getElementById('loadingMessage').textContent = message || 'Please wait while we process your request.';
+      document.getElementById('progressFill').style.width = '0%';
+      document.getElementById('progressText').textContent = '0%';
+      document.getElementById('loadingOverlay').style.display = 'flex';
+      clearTimeout(__loadingWatchdog);
+      __loadingWatchdog = setTimeout(() => {
+        document.getElementById('loadingOverlay').style.display = 'none';
+      }, 15000);
+    }
+    function updateProgress(p,msg){
+      const pct = Math.max(0, Math.min(100, p|0));
+      document.getElementById('progressFill').style.width = pct + '%';
+      document.getElementById('progressText').textContent = pct + '%';
+      if(msg) document.getElementById('loadingMessage').textContent = msg;
+    }
+    function hideLoading(){
+      document.getElementById('loadingOverlay').style.display = 'none';
+      clearTimeout(__loadingWatchdog);
+    }
+    function simulateProgress(duration){
+      let prog=0; const id=setInterval(()=>{ prog += Math.random()*20; if(prog>90) prog=90; updateProgress(prog); }, Math.max(120, duration/10)); return id;
+    }
+
+    // ===== Helpers =====
+    function setTopStats(rows, cols, num, cat){
+      const box = document.getElementById('topStats');
+      document.getElementById('statRows').textContent = rows;
+      document.getElementById('statCols').textContent = cols;
+      document.getElementById('statNum').textContent = num;
+      document.getElementById('statCat').textContent = cat;
+      box.style.display = 'flex';
+    }
+
+    function resetSection(datasetType){
+      const ids = ['info','overview','sample','columns','missing','fixes','results','prediction','drop-wrap']
+        .map(s=>`${datasetType}-${s}`);
+      ids.forEach(id=>{
+        const el=document.getElementById(id);
+        if(el){
+          if(id.endsWith('-info')) el.style.display='none';
+          else el.innerHTML='';
+        }
+      });
+      const trainBtn = document.getElementById(`train-${datasetType}-btn`);
+      if(trainBtn){ trainBtn.style.display='none'; trainBtn.disabled=false; trainBtn.textContent='Train ML Models'; }
+      const fixBtn = document.getElementById(`fix-${datasetType}-btn`);
+      if(fixBtn){ fixBtn.disabled=true; fixBtn.textContent='Fix Missing Values (confirm drops first)'; }
+    }
+
+    function colTypeOf(datasetType, col){
+      const data = currentDatasets[datasetType];
+      if(!data) return 'unknown';
+      if((data.numerical_cols||[]).includes(col)) return 'numeric';
+      if((data.categorical_cols||[]).includes(col)) return 'categorical';
+      return 'other';
+    }
+
+    // ===== Upload =====
+    function uploadFile(datasetType){
+      const input = document.getElementById(datasetType==='lever-force' ? 'leverForceFile' : 'eolMachineFile');
+      const file = input.files[0];
+      if(!file){ alert('Please select a file first'); return; }
+
+      showLoading('Uploading Dataset', `Uploading and analyzing ${file.name}…`);
+      const progId = simulateProgress(500);
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('dataset_type', datasetType);
+
+      fetch('/upload', { method:'POST', body: formData })
+        .then(r => { if(!r.ok) throw new Error('Upload failed'); return r.json(); })
+        .then(data => {
+          clearInterval(progId); updateProgress(100,'Upload completed!'); setTimeout(hideLoading, 300);
+          if(!data.success){ alert(data.error || 'Error'); return; }
+          currentDatasets[datasetType] = data;
+          displayDatasetInfo(datasetType, data);
+          setTopStats(data.total_rows, data.columns.length, data.numerical_cols.length, data.categorical_cols.length);
+        })
+        .catch(err => { clearInterval(progId); hideLoading(); console.error(err); alert('Error: '+err.message); });
+    }
+
+    // ===== Drop Columns UI =====
+    function renderDropUI(datasetType, data){
+      // gate Fix Missing until drop is confirmed
+      const fixBtn = document.getElementById(`fix-${datasetType}-btn`);
+      if(fixBtn){ fixBtn.disabled = true; fixBtn.textContent = 'Fix Missing Values (confirm drops first)'; }
+
+      // suggestions map
+      const sugg = {};
+      (data.drop_suggestions || []).forEach(s => { sugg[s.column] = s; });
+
+      // container just after missing section
+      const anchor = document.getElementById(`${datasetType}-missing`);
+      const wrapId = `${datasetType}-drop-wrap`;
+      const existing = document.getElementById(wrapId);
+      if(existing) existing.remove();
+
+      anchor.insertAdjacentHTML('afterend', `
+        <div id="${wrapId}" class="mt-3">
+          <div class="card section-card">
+            <div class="card-header bg-white fw-semibold d-flex align-items-center justify-content-between">
+              <span>Drop Columns</span>
+              <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-outline-primary" onclick="selectDropSet('${datasetType}','suggested')">Select suggested</button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="selectDropSet('${datasetType}','none')">Select none</button>
+                <button class="btn btn-sm btn-outline-danger" onclick="selectDropSet('${datasetType}','all')">Select all</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="table-responsive" style="max-height:260px;overflow:auto">
+                <table class="table table-sm align-middle">
+                  <thead><tr><th style="width:70px">Drop?</th><th>Column</th><th>Type</th><th>Note</th></tr></thead>
+                  <tbody id="${datasetType}-drop-body"></tbody>
+                </table>
+              </div>
+              <div class="mt-2 d-flex gap-2">
+                <button class="btn btn-danger" onclick="applyDropColumns('${datasetType}')">Apply drop</button>
+                <small class="text-muted">You must apply/confirm drops (even none) before fixing missing values.</small>
+              </div>
+              <div id="${datasetType}-drop-result" class="mt-2"></div>
+            </div>
+          </div>
+        </div>
+      `);
+
+      const body = document.getElementById(`${datasetType}-drop-body`);
+      const rows = [];
+      (data.columns || []).forEach(col => {
+        const s = sugg[col];
+        const note = s ? `${s.reason} ${s.unique_ratio!==undefined?`(uniq ${s.unique_ratio})`:''}` : '';
+        const checked = s ? 'checked' : '';
+        rows.push(`
+          <tr>
+            <td><input class="form-check-input drop-check" type="checkbox" data-col="${col}" ${checked}></td>
+            <td><code>${col}</code></td>
+            <td><span class="badge pill">${colTypeOf(datasetType,col)}</span></td>
+            <td class="text-muted small">${note}</td>
+          </tr>
+        `);
+      });
+      body.innerHTML = rows.join('');
+    }
+
+    function selectDropSet(datasetType, which){
+      const wrap = document.getElementById(`${datasetType}-drop-wrap`);
+      if(!wrap) return;
+      const checks = wrap.querySelectorAll('.drop-check');
+      if(which==='none'){
+        checks.forEach(c=>c.checked=false);
+      } else if(which==='all'){
+        checks.forEach(c=>c.checked=true);
+      } else { // suggested
+        const data = currentDatasets[datasetType]; if(!data) return;
+        const suggSet = new Set((data.drop_suggestions||[]).map(s=>s.column));
+        checks.forEach(c=>c.checked = suggSet.has(c.dataset.col));
+      }
+    }
+
+    function applyDropColumns(datasetType){
+      const wrap = document.getElementById(`${datasetType}-drop-wrap`);
+      if(!wrap) return;
+      const selectedColumns = Array.from(wrap.querySelectorAll('.drop-check'))
+        .filter(ch=>ch.checked)
+        .map(ch=>ch.dataset.col);
+
+      showLoading('Dropping Columns', selectedColumns.length ? `Dropping ${selectedColumns.length} column(s)…` : 'Confirming no drops…');
+      const id = setInterval(()=>{ updateProgress(Math.min(90, (Math.random()*50+40)|0)); }, 250);
+
+      fetch('/drop_columns', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ dataset_type: datasetType, columns: selectedColumns })
+      })
+      .then(r=>r.json())
+      .then(data=>{
+        clearInterval(id); updateProgress(100,'Done'); setTimeout(hideLoading, 250);
+        if(!data.success){ alert(data.error||'Error dropping columns'); return; }
+
+        // enable Fix Missing now that drop is confirmed
+        const fixBtn = document.getElementById(`fix-${datasetType}-btn`);
+        if(fixBtn){ fixBtn.disabled = false; fixBtn.textContent = 'Fix Missing Values'; }
+
+        // show result summary
+        const res = document.getElementById(`${datasetType}-drop-result`);
+        res.innerHTML = `
+          <div class="alert alert-success">
+            <div><strong>${data.message}</strong></div>
+            <div class="small mt-1">Dropped: ${data.dropped_columns && data.dropped_columns.length ? data.dropped_columns.map(c=>`<code>${c}</code>`).join(', ') : 'None'}</div>
+            ${data.not_found && data.not_found.length ? `<div class="small text-muted">Not found: ${data.not_found.join(', ')}</div>` : ''}
+            <div class="small text-muted mt-1">Working file: ${data.working_file} • Remaining cols: ${data.remaining_columns.length} • Shape: ${data.shape[0]}×${data.shape[1]}</div>
+          </div>
+        `;
+      })
+      .catch(err=>{
+        clearInterval(id); hideLoading();
+        console.error(err);
+        alert('Drop failed: '+err.message);
+      });
+    }
+
+    // ===== Display Dataset =====
+    function displayDatasetInfo(datasetType, data){
+      const infoDiv = document.getElementById(`${datasetType}-info`);
+      infoDiv.style.display = 'block';
+
+      document.getElementById(`${datasetType}-overview`).innerHTML = `
+        <div class="alert alert-light border">
+          <div><strong>Total Rows:</strong> ${data.total_rows}</div>
+          <div><strong>Total Columns:</strong> ${data.columns.length}</div>
+          <div><strong>Drop suggestions:</strong> ${(data.drop_suggestions||[]).length}</div>
+        </div>`;
+
+      // sample
+      let tableHtml = '<table class="table table-sm table-striped"><thead><tr>';
+      data.columns.forEach(col => tableHtml += `<th>${col}</th>`);
+      tableHtml += '</tr></thead><tbody>';
+      data.head_data.forEach(row => {
+        tableHtml += '<tr>' + data.columns.map(col => `<td>${(row[col] ?? '–')}</td>`).join('') + '</tr>';
+      });
+      tableHtml += '</tbody></table>';
+      document.getElementById(`${datasetType}-sample`).innerHTML = tableHtml;
+
+      // column analysis
+      document.getElementById(`${datasetType}-columns`).innerHTML = `
+        <div class="row g-2">
+          <div class="col-md-6">
+            <div class="card border-0" style="background:var(--soft)">
+              <div class="card-header bg-transparent fw-semibold">Numerical (${data.numerical_cols.length})</div>
+              <div class="card-body pt-2">${data.numerical_cols.map(c=>`<span class="badge pill me-1 mb-1">${c}</span>`).join('')}</div>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <div class="card border-0" style="background:var(--soft)">
+              <div class="card-header bg-transparent fw-semibold">Categorical (${data.categorical_cols.length})</div>
+              <div class="card-body pt-2">${data.categorical_cols.map(c=>`<span class="badge pill me-1 mb-1">${c}</span>`).join('')}</div>
+            </div>
+          </div>
+        </div>`;
+
+      // missing (note: we don't auto-show Train even if none; you must still run Fix to create cleaned file)
+      const missDiv = document.getElementById(`${datasetType}-missing`);
+      const mc = Object.keys(data.missing_values).length;
+      if(mc>0){
+        let html = '<div class="alert alert-warning"><strong>Missing Values Found:</strong><ul class="mb-0">';
+        Object.entries(data.missing_values).forEach(([col,count])=>{ html += `<li>${col}: ${count} missing</li>`; });
+        html += '</ul></div>';
+        missDiv.innerHTML = html;
+      } else {
+        missDiv.innerHTML = '<div class="alert alert-info">No missing values detected. You still need to confirm drops and run <em>Fix Missing</em> to produce the cleaned file.</div>';
+      }
+
+      // render Drop Columns panel and keep Fix button disabled until applied
+      renderDropUI(datasetType, data);
+      const fixBtn = document.getElementById(`fix-${datasetType}-btn`);
+      if(fixBtn){ fixBtn.disabled = true; fixBtn.textContent = 'Fix Missing Values (confirm drops first)'; }
+
+      // hide Train until after Fix Missing succeeds
+      const trainBtn = document.getElementById(`train-${datasetType}-btn`);
+      if(trainBtn){ trainBtn.style.display = 'none'; }
+    }
+
+    // ===== Fix Missing =====
+    function fixMissingValues(datasetType){
+      showLoading('Fixing Missing Values','Analyzing and fixing missing values…'); const id=simulateProgress(800);
+      fetch('/fix_missing',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({dataset_type:datasetType})})
+        .then(r=>r.json()).then(data=>{
+          clearInterval(id); updateProgress(100,'Done'); setTimeout(hideLoading, 300);
+          if(!data.success){ alert(data.error||'Error'); return; }
+          let html = '<div class="alert alert-success"><strong>'+data.message+'</strong>';
+          const keys = Object.keys(data.fixes_applied||{});
+          if(keys.length){
+            html += '<ul class="mb-0">';
+            Object.entries(data.fixes_applied).forEach(([col,fix])=> html += `<li>${col}: ${fix}</li>`);
+            html += '</ul>';
+          } else {
+            html += '<div class="small text-muted mt-1">No missing values needed fixing. Cleaned file prepared.</div>';
+          }
+          html += '</div>';
+          document.getElementById(`${datasetType}-fixes`).innerHTML = html;
+          document.getElementById(`${datasetType}-fixes`).style.display = 'block';
+          document.getElementById(`fix-${datasetType}-btn`).style.display = 'none';
+          document.getElementById(`train-${datasetType}-btn`).style.display = 'inline-block';
+        })
+        .catch(err=>{ clearInterval(id); hideLoading(); console.error(err); alert('Error: '+err.message); });
+    }
+
+    // ===== Train =====
+    function trainModels(datasetType){
+      showLoading('Training ML Models','Training Random Forest, Logistic Regression…');
+      let p=0; const id=setInterval(()=>{ p+=Math.random()*22; if(p>90) p=90; updateProgress(p); }, 220);
+      const btn = document.getElementById(`train-${datasetType}-btn`);
+      btn.textContent = 'Training Models…'; btn.disabled = true;
+
+      fetch('/train_models',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({dataset_type:datasetType})})
+        .then(r=>r.json()).then(data=>{
+          clearInterval(id); updateProgress(100,'Models trained successfully!'); setTimeout(hideLoading, 300);
+          if(!data.success){ alert(data.error||'Error'); btn.textContent='Train ML Models'; btn.disabled=false; return; }
+          displayModelResults(datasetType, data);
+          createPredictionForm(datasetType, data.feature_columns, data.feature_metadata, data.top_feature_importance);
+          btn.textContent='Train ML Models'; btn.disabled=false;
+        })
+        .catch(err=>{ clearInterval(id); hideLoading(); console.error(err); alert('Error: '+err.message); btn.textContent='Train ML Models'; btn.disabled=false; });
+    }
+
+    function displayModelResults(datasetType, data){
+      let html = '<h6 class="mb-3">Model Performance Results</h6>';
+      Object.entries(data.results).forEach(([name, m])=>{
+        html += `
+          <div class="card section-card mb-3">
+            <div class="card-header bg-white fw-semibold d-flex justify-content-between align-items-center">
+              <span>${name}</span>
+              <span class="small text-muted">${m.roc_auc ? 'ROC AUC: '+(m.roc_auc*100).toFixed(2)+'%' : ''}</span>
+            </div>
+            <div class="card-body">
+              <div class="row text-center g-3">
+                <div class="col-6 col-md-3">
+                  <div class="small text-muted">F1 Score</div>
+                  <div class="stat-value text-primary">${(m.f1_score*100).toFixed(2)}%</div>
+                </div>
+                <div class="col-6 col-md-3">
+                  <div class="small text-muted">Precision</div>
+                  <div class="stat-value text-success">${(m.precision*100).toFixed(2)}%</div>
+                </div>
+                <div class="col-6 col-md-3">
+                  <div class="small text-muted">Recall</div>
+                  <div class="stat-value text-warning">${(m.recall*100).toFixed(2)}%</div>
+                </div>
+                <div class="col-6 col-md-3">
+                  <div class="small text-muted">ROC AUC</div>
+                  <div class="stat-value text-info">${m.roc_auc ? (m.roc_auc*100).toFixed(2)+'%' : 'N/A'}</div>
+                </div>
+              </div>
+              ${m.roc_data ? `<div class="roc-chart"><canvas id="roc-${datasetType}-${name.replace(/\s+/g,'-').toLowerCase()}"></canvas></div>` : ''}
+            </div>
+          </div>`;
+      });
+      const box = document.getElementById(`${datasetType}-results`);
+      box.innerHTML = html; box.style.display='block';
+
+      // Draw ROC curves
+      Object.entries(data.results).forEach(([name, m])=>{
+        if(!m.roc_data) return;
+        const ctx = document.getElementById(`roc-${datasetType}-${name.replace(/\s+/g,'-').toLowerCase()}`).getContext('2d');
+        new Chart(ctx, { type:'line', data:{ datasets:[
+          { label:'ROC Curve', data: m.roc_data.fpr.map((x,i)=>({x, y:m.roc_data.tpr[i]})), fill:false },
+          { label:'Random', data:[{x:0,y:0},{x:1,y:1}], borderDash:[5,5], fill:false }
+        ]}, options:{ responsive:true, scales:{ x:{ title:{display:true,text:'FPR'}}, y:{ title:{display:true,text:'TPR'}}}}});
+      });
+    }
+
+    // ===== Prediction Form & Action =====
+    function fmtImp(v){ return Math.abs(v) < 1e-4 ? Number(v).toExponential(2) : Number(v).toFixed(4); }
+
+    function createPredictionForm(datasetType, featureColumns, featureMetadata, topFeatureImportance){
+      let html = `
+        <h6 class="mb-3">Real-time Prediction</h6>
+        <div class="row g-3 align-items-end">
+          <div class="col-md-6">
+            <label class="form-label">Select Model</label>
+            <select class="form-select" id="model-select-${datasetType}">
+              <option value="Random Forest">Random Forest</option>
+              <option value="Logistic Regression">Logistic Regression</option>
+            </select>
+          </div>
+          <div class="col-md-6 text-md-end">
+            <button class="btn btn-outline-secondary" id="randomize-${datasetType}">Randomize Inputs</button>
+          </div>
+        </div>
+        <div class="row g-3 mt-1">`;
+
+      const inputs = featureColumns.filter(c=>c.toLowerCase()!=='result');
+      inputs.forEach((col,idx)=>{
+        if(idx%3===0 && idx>0) html += '</div><div class="row g-3 mt-1">';
+        const meta = (featureMetadata && featureMetadata[col]) ? featureMetadata[col] : {type:'numeric', default:0};
+        html += `<div class="col-md-4"><label class="form-label">${col}</label>`;
+        if(meta.type==='categorical'){
+          html += `<select class="form-select" id="${col}-${datasetType}">` + (meta.uniques||[]).map(u=>`<option value="${u}">${u}</option>`).join('') + `</select>`;
+        } else {
+          const def = (typeof meta.default==='number') ? meta.default : 0;
+          html += `<input type="number" class="form-control" id="${col}-${datasetType}" step="any" value="${def}">`;
+        }
+        html += `</div>`;
+      });
+
+      html += `</div>
+        <div class="mt-3 d-flex gap-2">
+          <button class="btn btn-brand" onclick="makePrediction('${datasetType}')">Predict</button>
+          <button class="btn btn-outline-secondary" onclick="clearPrediction('${datasetType}')">Clear</button>
+        </div>
+        <div id="prediction-result-${datasetType}" class="mt-3"></div>`;
+
+      // Feature Importance tables
+      if(topFeatureImportance && Object.keys(topFeatureImportance).length){
+        html += `<div class="mt-4"><h6>Top 5 Feature Importance</h6>`;
+        Object.entries(topFeatureImportance).forEach(([modelName, items])=>{
+          html += `<div class="card border-0 mt-2" style="background:var(--soft)"><div class="card-header bg-transparent fw-semibold">${modelName}</div><div class="card-body pt-2">
+            <div class="table-responsive"><table class="table table-sm">
+              <thead><tr><th>Feature</th><th>Importance</th></tr></thead>
+              <tbody>${items.map(it=>`<tr><td>${it.feature}</td><td>${fmtImp(it.importance)}</td></tr>`).join('')}</tbody>
+            </table></div>
+          </div></div>`;
+        });
+        html += `</div>`;
+      }
+
+      const box = document.getElementById(`${datasetType}-prediction`);
+      box.innerHTML = html; box.style.display='block';
+
+      const rnd = document.getElementById(`randomize-${datasetType}`);
+      if(rnd){ rnd.onclick = ()=>{
+        inputs.forEach(col=>{
+          const meta = featureMetadata && featureMetadata[col] ? featureMetadata[col] : null;
+          const el = document.getElementById(`${col}-${datasetType}`);
+          if(!el || !meta) return;
+          if(meta.type==='categorical'){
+            if(meta.uniques && meta.uniques.length){ el.value = meta.uniques[Math.floor(Math.random()*meta.uniques.length)]; }
+          } else {
+            const base = (typeof meta.default==='number') ? meta.default : 0;
+            const factor = 0.9 + Math.random()*0.2; el.value = (base*factor).toFixed(4);
+          }
+        })
+      } }
+    }
+
+    // Global predict (needed for inline onclick)
+    window.makePrediction = function(datasetType){
+      const modelName = document.getElementById(`model-select-${datasetType}`).value;
+      const box = document.getElementById(`${datasetType}-prediction`);
+      const inputData = {};
+      // numbers
+      box.querySelectorAll('input[type="number"]').forEach(inp=>{
+        const key = inp.id.replace(`-${datasetType}`, '');
+        const v = parseFloat(inp.value); inputData[key] = Number.isFinite(v) ? v : 0;
+      });
+      // categoricals
+      box.querySelectorAll('select').forEach(sel=>{
+        if(sel.id===`model-select-${datasetType}`) return; // skip model selector
+        const key = sel.id.replace(`-${datasetType}`, '');
+        inputData[key] = sel.value;
+      });
+
+      fetch('/predict',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({dataset_type:datasetType, model_name:modelName, input_data:inputData})})
+        .then(r=>r.json()).then(data=>{
+          if(!data.success){ alert('Error: '+(data.error||'Prediction failed')); return; }
+          let html = `<div class="alert alert-info"><h6 class="mb-1">Prediction Result</h6><div><strong>Predicted RESULT:</strong> ${data.prediction}</div>`;
+          if(data.prediction_probability){
+            html += `<div class="mt-2"><strong>Prediction Probabilities</strong><ul class="mb-0">` + data.prediction_probability.map((p,i)=>`<li>Class ${i}: ${(p*100).toFixed(2)}%</li>`).join('') + `</ul></div>`;
+          }
+          html += `</div>`;
+          document.getElementById(`prediction-result-${datasetType}`).innerHTML = html;
+        })
+        .catch(err=>{ console.error(err); alert('An error occurred while making prediction'); });
+    }
+
+    function clearPrediction(datasetType){
+      const el = document.getElementById(`prediction-result-${datasetType}`); if(el) el.innerHTML = '';
+    }
+
+    // ===== Draw ROC (kept simple) =====
+    // (handled inline in displayModelResults)
+
+    // Hide overlay on first load (belt & suspenders)
+    window.addEventListener('load', () => {
+      const ov = document.getElementById('loadingOverlay');
+      if (ov) ov.style.display = 'none';
+    });
+  </script>
+</body>
+</html>
