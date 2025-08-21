@@ -1,10 +1,11 @@
 from flask import Flask, render_template, request, jsonify, session
 import pandas as pd
 import numpy as np
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
 from sklearn.metrics import classification_report, f1_score, precision_score, recall_score, roc_auc_score, roc_curve
 import pickle
 import os
@@ -79,8 +80,8 @@ def upload_file():
                 print("CSV file loaded successfully")
             elif filename.endswith('.xlsx'):
                 print("Reading as XLSX file...")
-                df = pd.read_excel(filepath, engine='openpyxl')
-                print("XLSX file loaded successfully")
+                df_preview = pd.read_excel(filepath, engine='openpyxl')
+                df = df_preview
             elif filename.endswith('.xls'):
                 print("Reading as XLS file...")
                 df = pd.read_excel(filepath, engine='xlrd')
@@ -90,8 +91,6 @@ def upload_file():
             print(f"Dataset columns: {df.columns.tolist()}")
             print(f"Dataset dtypes:\n{df.dtypes}")
             print(f"First row data:\n{df.head(1)}")
-            print(f"Dataset info:")
-            df.info()
             
             # Store dataset info in session
             print("=== STORING SESSION DATA ===")
@@ -232,17 +231,9 @@ def fix_missing_values():
                     fixes_applied[col] = f"Filled {missing_count} missing values with median: {median_val:.2f}"
         
         # Save cleaned dataset
-        print("Saving cleaned dataset...")
-        if filepath.endswith('.csv'):
-            cleaned_filepath = filepath.replace('.csv', '_cleaned.csv')
+        if filepath.endswith(('.csv', '.xlsx', '.xls')):
+            cleaned_filepath = os.path.splitext(filepath)[0] + '_cleaned.csv'
             df.to_csv(cleaned_filepath, index=False)
-        elif filepath.endswith('.xlsx'):
-            cleaned_filepath = filepath.replace('.xlsx', '_cleaned.xlsx')
-            df.to_excel(cleaned_filepath, index=False, engine='openpyxl')
-        elif filepath.endswith('.xls'):
-            # Convert .xls to .xlsx for saving (since xlrd doesn't support writing)
-            cleaned_filepath = filepath.replace('.xls', '_cleaned.xlsx')
-            df.to_excel(cleaned_filepath, index=False, engine='openpyxl')
         
         session[f'{dataset_type}_cleaned_data'] = cleaned_filepath
         print(f"Cleaned dataset saved to: {cleaned_filepath}")
@@ -321,11 +312,43 @@ def train_models():
         categorical_cols = X.select_dtypes(include=['object', 'category']).columns
         print(f"Categorical columns to encode: {categorical_cols.tolist()}")
         
+        encoders = {}
+        feature_metadata = {}
+
         for col in categorical_cols:
             print(f"Encoding column '{col}' with unique values: {X[col].unique()}")
-            X[col] = pd.Categorical(X[col]).codes
+            cat = pd.Categorical(X[col])
+            X[col] = cat.codes
             print(f"After encoding, '{col}' has values: {X[col].unique()}")
+
+            categories = list(cat.categories)
+            value_to_code = {v: int(i) for i, v in enumerate(categories)}
+            encoders[col] = {"categories": categories, "value_to_code": value_to_code}
         
+        # Build metadata for ALL features (both numeric & categorical)
+        for col in X.columns:
+            if col in encoders:
+                # categorical
+                uniques = encoders[col]["categories"]
+                feature_metadata[col] = {
+                    "type": "categorical",
+                    "uniques": uniques,
+                    "default": uniques[0] if len(uniques) > 0 else None
+                }
+            else:
+                # numeric
+                col_series = df[col] if col in df.columns else X[col]
+                try:
+                    # a realistic default (median), fallback to 0
+                    default_val = float(pd.to_numeric(col_series, errors='coerce').median())
+                    if pd.isna(default_val):
+                        default_val = 0.0
+                except Exception:
+                    default_val = 0.0
+                feature_metadata[col] = {
+                    "type": "numeric",
+                    "default": default_val
+                }
         # Check for any remaining non-numeric columns
         non_numeric_cols = X.select_dtypes(exclude=['number']).columns
         if len(non_numeric_cols) > 0:
@@ -457,10 +480,11 @@ def train_models():
         # Train multiple models
         models = {
             'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
-            'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000),
-            'SVM': SVC(probability=True, random_state=42)
-        }
-        
+            'Logistic Regression': make_pipeline(
+                StandardScaler(),  
+                LogisticRegression(random_state=42, max_iter=2000)
+            )
+        }        
         results = {}
         trained_models = {}
         
@@ -512,13 +536,47 @@ def train_models():
         with open(feature_columns_file, 'w') as f:
             json.dump(X.columns.tolist(), f)
         
+        with open(os.path.join(models_dir, 'encoders.json'), 'w') as f:
+            json.dump(encoders, f)
+        with open(os.path.join(models_dir, 'feature_metadata.json'), 'w') as f:
+            json.dump(feature_metadata, f)
+        
         session[f'{dataset_type}_models_dir'] = models_dir
         session[f'{dataset_type}_feature_columns'] = X.columns.tolist()
-        
+        session[f'{dataset_type}_categorical_cols'] = list(encoders.keys())  # NEW
+
+        top_importance = {}
+        try:
+            rf = trained_models.get('Random Forest')
+            if rf is not None and hasattr(rf, 'feature_importances_'):
+                importances = rf.feature_importances_
+                pairs = sorted(zip(X.columns.tolist(), importances), key=lambda t: t[1], reverse=True)[:5]
+                top_importance['Random Forest'] = [{"feature": f, "importance": float(s)} for f, s in pairs]
+        except Exception as e:
+            print(f"RF importance error: {e}")
+
+        try:
+            lr = trained_models.get('Logistic Regression')
+            if lr is not None:
+                # If it’s a pipeline, get the final step
+                from sklearn.pipeline import Pipeline
+                if isinstance(lr, Pipeline):
+                    lr_est = lr.named_steps.get('logisticregression')
+                else:
+                    lr_est = lr
+                if hasattr(lr_est, 'coef_'):
+                    coefs = abs(lr_est.coef_[0]) if lr_est.coef_.ndim == 2 else abs(lr_est.coef_)
+                    pairs = sorted(zip(X.columns.tolist(), coefs), key=lambda t: t[1], reverse=True)[:5]
+                    top_importance['Logistic Regression'] = [{"feature": f, "importance": float(s)} for f, s in pairs]
+        except Exception as e:
+            print(f"LR coef importance error: {e}")
+
         return jsonify({
             'success': True,
             'results': results,
-            'feature_columns': X.columns.tolist()
+            'feature_columns': X.columns.tolist(),
+            'feature_metadata': feature_metadata,        
+            'top_feature_importance': top_importance
         })
         
     except Exception as e:
@@ -529,40 +587,76 @@ def predict():
     dataset_type = request.json.get('dataset_type')
     model_name = request.json.get('model_name')
     input_data = request.json.get('input_data')
-    
+
     models_dir = session.get(f'{dataset_type}_models_dir')
     feature_columns = session.get(f'{dataset_type}_feature_columns')
-    
+    categorical_cols = session.get(f'{dataset_type}_categorical_cols', [])
+
     if not models_dir or not feature_columns:
         return jsonify({'error': 'Models not trained yet'})
-    
+
     try:
         # Load the model
         model_filename = os.path.join(models_dir, f'{model_name.lower().replace(" ", "_")}.pkl')
         with open(model_filename, 'rb') as f:
             model = pickle.load(f)
-        
-        # Prepare input data
+
+        # Load encoders & metadata
+        encoders_path = os.path.join(models_dir, 'encoders.json')
+        metadata_path = os.path.join(models_dir, 'feature_metadata.json')
+
+        encoders = {}
+        if os.path.exists(encoders_path):
+            with open(encoders_path, 'r') as f:
+                encoders = json.load(f)
+
+        feature_metadata = {}
+        if os.path.exists(metadata_path):
+            with open(metadata_path, 'r') as f:
+                feature_metadata = json.load(f)
+
+        # Build DataFrame from input values (strings/numbers)
         input_df = pd.DataFrame([input_data])
-        
-        # Ensure all feature columns are present
+
+        # Ensure all expected columns exist (missing → 0)
         for col in feature_columns:
             if col not in input_df.columns:
-                input_df[col] = 0  # Default value for missing columns
-        
-        # Reorder columns to match training data
+                # For categoricals, use the default category if present; otherwise 0
+                if col in feature_metadata and feature_metadata[col].get("type") == "categorical":
+                    default_cat = feature_metadata[col].get("default")
+                    input_df[col] = default_cat if default_cat is not None else ""
+                else:
+                    input_df[col] = 0
+
+        # Encode categoricals using saved encoders
+        for col in categorical_cols:
+            if col in input_df.columns and col in encoders:
+                v2c = encoders[col]["value_to_code"]
+                # map value -> code; unseen → -1
+                input_df[col] = input_df[col].map(lambda v: v2c.get(str(v), v2c.get(v, -1)))
+
+        # Coerce numerics
+        for col in input_df.columns:
+            if col not in categorical_cols:
+                input_df[col] = pd.to_numeric(input_df[col], errors='coerce').fillna(0)
+
+        # Reorder columns to match training
         input_df = input_df[feature_columns]
-        
-        # Make prediction
+
+        # Predict
         prediction = model.predict(input_df)[0]
         prediction_proba = model.predict_proba(input_df)[0] if hasattr(model, 'predict_proba') else None
-        
+
+        # make JSON friendly
+        pred_val = int(prediction) if isinstance(prediction, (np.integer, int, np.int64)) else prediction
+        proba_list = prediction_proba.tolist() if prediction_proba is not None else None
+
         return jsonify({
             'success': True,
-            'prediction': int(prediction),
-            'prediction_probability': prediction_proba.tolist() if prediction_proba is not None else None
+            'prediction': pred_val,
+            'prediction_probability': proba_list
         })
-        
+
     except Exception as e:
         return jsonify({'error': f'Error making prediction: {str(e)}'})
 
