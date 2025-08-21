@@ -195,6 +195,60 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        window.makePrediction = function(datasetType) {
+        const modelName = document.getElementById(`model-select-${datasetType}`).value;
+        const inputData = {};
+
+        // Collect all inputs (numbers and selects) inside the prediction box
+        const box = document.getElementById(`${datasetType}-prediction`);
+        // number inputs
+        box.querySelectorAll('input[type="number"]').forEach(input => {
+            const fieldName = input.id.replace(`-${datasetType}`, '');
+            const val = parseFloat(input.value);
+            inputData[fieldName] = Number.isFinite(val) ? val : 0;
+        });
+        // categorical selects
+        box.querySelectorAll('select').forEach(sel => {
+            // skip the model selector
+            if (sel.id === `model-select-${datasetType}`) return;
+            const fieldName = sel.id.replace(`-${datasetType}`, '');
+            inputData[fieldName] = sel.value;
+        });
+
+        fetch('/predict', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                dataset_type: datasetType,
+                model_name: modelName,
+                input_data: inputData
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) {
+                alert('Error: ' + (data.error || 'Prediction failed'));
+                return;
+            }
+            let html = `
+                <div class="alert alert-info">
+                    <h6>Prediction Result</h6>
+                    <strong>Predicted RESULT: ${data.prediction}</strong>
+            `;
+            if (data.prediction_probability) {
+                html += `<br><strong>Prediction Probabilities:</strong><ul>`;
+                html += data.prediction_probability.map((p,i) => `<li>Class ${i}: ${(p*100).toFixed(2)}%</li>`).join('');
+                html += `</ul>`;
+            }
+            html += `</div>`;
+            document.getElementById(`prediction-result-${datasetType}`).innerHTML = html;
+        })
+        .catch(err => {
+            console.error(err);
+            alert('An error occurred while making prediction');
+        });
+    };
+
         let currentDatasets = {};
 
         // Loading overlay functions
@@ -252,7 +306,7 @@
 
             // Show loading overlay
             showLoading('Uploading Dataset', `Uploading and analyzing ${file.name}...`);
-            const progressInterval = simulateProgress(3000);
+            const progressInterval = simulateProgress(500);
 
             console.log('File details:');
             console.log('- Name:', file.name);
@@ -430,7 +484,7 @@
 
         function trainModels(datasetType) {
             // Show loading overlay
-            showLoading('Training ML Models', 'Training Random Forest, Logistic Regression, and SVM models...');
+            showLoading('Training ML Models', 'Training Random Forest, Logistic Regression...');
             
             // Simulate more detailed progress for model training
             let progress = 0;
@@ -438,7 +492,6 @@
                 'Preparing data for training...',
                 'Training Random Forest model...',
                 'Training Logistic Regression model...',
-                'Training SVM model...',
                 'Calculating performance metrics...',
                 'Generating ROC curves...',
                 'Finalizing results...'
@@ -446,7 +499,7 @@
             
             let messageIndex = 0;
             const progressInterval = setInterval(() => {
-                progress += Math.random() * 12;
+                progress += Math.random() * 20;
                 if (progress > 90) progress = 90;
                 
                 if (progress > messageIndex * 13 && messageIndex < messages.length) {
@@ -455,7 +508,7 @@
                 } else {
                     updateProgress(Math.round(progress));
                 }
-            }, 800);
+            }, 300);
 
             document.getElementById(`train-${datasetType}-btn`).innerHTML = 'Training Models...';
             document.getElementById(`train-${datasetType}-btn`).disabled = true;
@@ -479,7 +532,7 @@
                     
                     if (data.success) {
                         displayModelResults(datasetType, data);
-                        createPredictionForm(datasetType, data.feature_columns);
+                        createPredictionForm(datasetType, data.feature_columns, data.feature_metadata, data.top_feature_importance);
                     } else {
                         alert('Error: ' + data.error);
                     }
@@ -601,101 +654,105 @@
             });
         }
 
-        function createPredictionForm(datasetType, featureColumns) {
-            let formHtml = `
-                <h6>Real-time Prediction</h6>
-                <div class="row">
-                    <div class="col-md-6">
-                        <label for="model-select-${datasetType}" class="form-label">Select Model:</label>
-                        <select class="form-select" id="model-select-${datasetType}">
-                            <option value="Random Forest">Random Forest</option>
-                            <option value="Logistic Regression">Logistic Regression</option>
-                            <option value="SVM">SVM</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="row mt-3">
-            `;
+function createPredictionForm(datasetType, featureColumns, featureMetadata, topFeatureImportance) {
+    let formHtml = `
+        <h6>Real-time Prediction</h6>
+        <div class="row">
+            <div class="col-md-6">
+                <label for="model-select-${datasetType}" class="form-label">Select Model:</label>
+                <select class="form-select" id="model-select-${datasetType}">
+                    <option value="Random Forest">Random Forest</option>
+                    <option value="Logistic Regression">Logistic Regression</option>
+                    <option value="SVM">SVM</option>
+                </select>
+            </div>
+            <div class="col-md-6 d-flex align-items-end justify-content-end">
+                <button class="btn btn-outline-secondary" id="randomize-${datasetType}">Randomize Inputs</button>
+            </div>
+        </div>
+        <div class="row mt-3">
+    `;
 
-            // Create input fields for each feature (excluding RESULT)
-            const inputFeatures = featureColumns.filter(col => col !== 'RESULT');
-            inputFeatures.forEach((col, index) => {
-                if (index % 3 === 0 && index > 0) {
-                    formHtml += '</div><div class="row mt-2">';
-                }
-                formHtml += `
-                    <div class="col-md-4">
-                        <label for="${col}-${datasetType}" class="form-label">${col}:</label>
-                        <input type="number" class="form-control" id="${col}-${datasetType}" step="any" value="0">
-                    </div>
-                `;
-            });
+    // Exclude RESULT if present
+    const inputFeatures = featureColumns.filter(col => col.toLowerCase() !== 'result');
 
-            formHtml += `
-                </div>
-                <div class="mt-3">
-                    <button class="btn btn-primary" onclick="makePrediction('${datasetType}')">Predict</button>
-                </div>
-                <div id="prediction-result-${datasetType}" class="mt-3"></div>
-            `;
-
-            document.getElementById(`${datasetType}-prediction`).innerHTML = formHtml;
-            document.getElementById(`${datasetType}-prediction`).style.display = 'block';
+    // Build inputs 3-per-row
+    inputFeatures.forEach((col, index) => {
+        if (index % 3 === 0 && index > 0) {
+            formHtml += '</div><div class="row mt-2">';
         }
 
-        function makePrediction(datasetType) {
-            const modelName = document.getElementById(`model-select-${datasetType}`).value;
-            const inputData = {};
+        const meta = featureMetadata && featureMetadata[col] ? featureMetadata[col] : {type: 'numeric', default: 0};
 
-            // Get all input values
-            const inputs = document.querySelectorAll(`#${datasetType}-prediction input[type="number"]`);
-            inputs.forEach(input => {
-                const fieldName = input.id.replace(`-${datasetType}`, '');
-                inputData[fieldName] = parseFloat(input.value) || 0;
-            });
+        formHtml += `<div class="col-md-4">
+            <label for="${col}-${datasetType}" class="form-label">${col}:</label>`;
 
-            fetch('/predict', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    dataset_type: datasetType,
-                    model_name: modelName,
-                    input_data: inputData
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    let resultHtml = `
-                        <div class="alert alert-info">
-                            <h6>Prediction Result:</h6>
-                            <strong>Predicted RESULT: ${data.prediction}</strong>
-                    `;
-                    
-                    if (data.prediction_probability) {
-                        resultHtml += `
-                            <br><strong>Prediction Probabilities:</strong>
-                            <ul>
-                                ${data.prediction_probability.map((prob, idx) => 
-                                    `<li>Class ${idx}: ${(prob * 100).toFixed(2)}%</li>`
-                                ).join('')}
-                            </ul>
-                        `;
+        if (meta.type === 'categorical') {
+            formHtml += `<select class="form-select" id="${col}-${datasetType}">
+                ${(meta.uniques || []).map(u => `<option value="${u}">${u}</option>`).join('')}
+            </select>`;
+        } else { // numeric
+            const defVal = (typeof meta.default === 'number') ? meta.default : 0;
+            formHtml += `<input type="number" class="form-control" id="${col}-${datasetType}" step="any" value="${defVal}">`;
+        }
+
+        formHtml += `</div>`;
+    });
+
+    formHtml += `
+        </div>
+        <div class="mt-3">
+            <button class="btn btn-primary" onclick="makePrediction('${datasetType}')">Predict</button>
+        </div>
+        <div id="prediction-result-${datasetType}" class="mt-3"></div>
+    `;
+
+    // Feature importance visualization (simple table)
+    if (topFeatureImportance && Object.keys(topFeatureImportance).length > 0) {
+        formHtml += `<div class="mt-4">
+            <h6>Top 5 Feature Importance</h6>`;
+        Object.entries(topFeatureImportance).forEach(([modelName, items]) => {
+            formHtml += `<div class="card mt-2"><div class="card-header">${modelName}</div><div class="card-body">
+                <div class="table-responsive">
+                <table class="table table-sm">
+                    <thead><tr><th>Feature</th><th>Importance</th></tr></thead>
+                    <tbody>
+                        ${items.map(it => `<tr><td>${it.feature}</td><td>${(+it.importance).toFixed(4)}</td></tr>`).join('')}
+                    </tbody>
+                </table>
+                </div>
+            </div></div>`;
+        });
+        formHtml += `</div>`;
+    }
+
+    const container = document.getElementById(`${datasetType}-prediction`);
+    container.innerHTML = formHtml;
+    container.style.display = 'block';
+
+    // Randomize button: pick random categorical; for numeric add small noise around default
+    const randomBtn = document.getElementById(`randomize-${datasetType}`);
+    if (randomBtn) {
+        randomBtn.onclick = () => {
+            inputFeatures.forEach(col => {
+                const meta = featureMetadata && featureMetadata[col] ? featureMetadata[col] : null;
+                const el = document.getElementById(`${col}-${datasetType}`);
+                if (!el || !meta) return;
+                if (meta.type === 'categorical') {
+                    if (meta.uniques && meta.uniques.length > 0) {
+                        const idx = Math.floor(Math.random() * meta.uniques.length);
+                        el.value = meta.uniques[idx];
                     }
-                    
-                    resultHtml += '</div>';
-                    document.getElementById(`prediction-result-${datasetType}`).innerHTML = resultHtml;
                 } else {
-                    alert('Error: ' + data.error);
+                    const base = (typeof meta.default === 'number') ? meta.default : 0;
+                    // simple ±10% jitter
+                    const factor = 0.9 + Math.random() * 0.2;
+                    el.value = (base * factor).toFixed(4);
                 }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                alert('An error occurred while making prediction');
             });
-        }
-    </script>
+        };
+    }
+}
+</script>
 </body>
 </html>
