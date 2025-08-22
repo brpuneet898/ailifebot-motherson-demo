@@ -35,6 +35,8 @@
     .table thead th{background:#f3f2f8}
     .sticky-actions{position:sticky; top:0; background:#fff; z-index:20; padding-top:8px}
     .footer-note{color:#6b7280}
+    .confidence-bar{height:8px; background:#e5e7eb; border-radius:6px; overflow:hidden}
+    .confidence-fill{height:100%; background:var(--brand)}
   </style>
 </head>
 <body>
@@ -179,7 +181,7 @@
             </div>
           </div>
 
-          <!-- Drop Columns Panel gets injected after Missing Values -->
+          <!-- Drop Columns panel is injected after Missing Values -->
 
           <div class="card section-card mt-3">
             <div class="card-body">
@@ -261,7 +263,7 @@
             </div>
           </div>
 
-          <!-- Drop Columns Panel gets injected after Missing Values -->
+          <!-- Drop Columns panel is injected after Missing Values -->
 
           <div class="card section-card mt-3">
             <div class="card-body">
@@ -323,7 +325,7 @@
     }
 
     function resetSection(datasetType){
-      const ids = ['info','overview','sample','columns','missing','fixes','results','prediction','drop-wrap']
+      const ids = ['info','overview','sample','columns','missing','fixes','results','prediction','drop-wrap','batch-result']
         .map(s=>`${datasetType}-${s}`);
       ids.forEach(id=>{
         const el=document.getElementById(id);
@@ -373,15 +375,11 @@
 
     // ===== Drop Columns UI =====
     function renderDropUI(datasetType, data){
-      // gate Fix Missing until drop is confirmed
       const fixBtn = document.getElementById(`fix-${datasetType}-btn`);
       if(fixBtn){ fixBtn.disabled = true; fixBtn.textContent = 'Fix Missing Values (confirm drops first)'; }
 
-      // suggestions map
-      const sugg = {};
-      (data.drop_suggestions || []).forEach(s => { sugg[s.column] = s; });
+      const sugg = {}; (data.drop_suggestions || []).forEach(s => { sugg[s.column] = s; });
 
-      // container just after missing section
       const anchor = document.getElementById(`${datasetType}-missing`);
       const wrapId = `${datasetType}-drop-wrap`;
       const existing = document.getElementById(wrapId);
@@ -441,7 +439,7 @@
         checks.forEach(c=>c.checked=false);
       } else if(which==='all'){
         checks.forEach(c=>c.checked=true);
-      } else { // suggested
+      } else {
         const data = currentDatasets[datasetType]; if(!data) return;
         const suggSet = new Set((data.drop_suggestions||[]).map(s=>s.column));
         checks.forEach(c=>c.checked = suggSet.has(c.dataset.col));
@@ -468,11 +466,9 @@
         clearInterval(id); updateProgress(100,'Done'); setTimeout(hideLoading, 250);
         if(!data.success){ alert(data.error||'Error dropping columns'); return; }
 
-        // enable Fix Missing now that drop is confirmed
         const fixBtn = document.getElementById(`fix-${datasetType}-btn`);
         if(fixBtn){ fixBtn.disabled = false; fixBtn.textContent = 'Fix Missing Values'; }
 
-        // show result summary
         const res = document.getElementById(`${datasetType}-drop-result`);
         res.innerHTML = `
           <div class="alert alert-success">
@@ -529,24 +525,25 @@
           </div>
         </div>`;
 
-      // missing (note: we don't auto-show Train even if none; you must still run Fix to create cleaned file)
+      // missing
       const missDiv = document.getElementById(`${datasetType}-missing`);
       const mc = Object.keys(data.missing_values).length;
       if(mc>0){
         let html = '<div class="alert alert-warning"><strong>Missing Values Found:</strong><ul class="mb-0">';
-        Object.entries(data.missing_values).forEach(([col,count])=>{ html += `<li>${col}: ${count} missing</li>`; });
+        Object.entries(data.missing_values).forEach(function(entry){
+          var col = entry[0]; var count = entry[1];
+          html += '<li>' + col + ': ' + count + ' missing</li>';
+        });
         html += '</ul></div>';
         missDiv.innerHTML = html;
       } else {
         missDiv.innerHTML = '<div class="alert alert-info">No missing values detected. You still need to confirm drops and run <em>Fix Missing</em> to produce the cleaned file.</div>';
       }
 
-      // render Drop Columns panel and keep Fix button disabled until applied
       renderDropUI(datasetType, data);
       const fixBtn = document.getElementById(`fix-${datasetType}-btn`);
       if(fixBtn){ fixBtn.disabled = true; fixBtn.textContent = 'Fix Missing Values (confirm drops first)'; }
 
-      // hide Train until after Fix Missing succeeds
       const trainBtn = document.getElementById(`train-${datasetType}-btn`);
       if(trainBtn){ trainBtn.style.display = 'none'; }
     }
@@ -640,7 +637,7 @@
       });
     }
 
-    // ===== Prediction Form & Action =====
+    // ===== Prediction (single + batch) =====
     function fmtImp(v){ return Math.abs(v) < 1e-4 ? Number(v).toExponential(2) : Number(v).toFixed(4); }
 
     function createPredictionForm(datasetType, featureColumns, featureMetadata, topFeatureImportance){
@@ -681,7 +678,7 @@
         </div>
         <div id="prediction-result-${datasetType}" class="mt-3"></div>`;
 
-      // Feature Importance tables
+      // Feature Importance
       if(topFeatureImportance && Object.keys(topFeatureImportance).length){
         html += `<div class="mt-4"><h6>Top 5 Feature Importance</h6>`;
         Object.entries(topFeatureImportance).forEach(([modelName, items])=>{
@@ -694,6 +691,31 @@
         });
         html += `</div>`;
       }
+
+      // === Batch Prediction UI ===
+      html += `
+        <div class="mt-4">
+          <h6 class="mb-2">Batch Prediction</h6>
+          <div class="row g-3 align-items-end">
+            <div class="col-md-4">
+              <label class="form-label">Select Model</label>
+              <select class="form-select" id="batch-model-select-${datasetType}">
+                <option value="Random Forest">Random Forest</option>
+                <option value="Logistic Regression">Logistic Regression</option>
+              </select>
+            </div>
+            <div class="col-md-8">
+              <label class="form-label">Upload CSV/Excel (headers must match original dataset)</label>
+              <input class="form-control" type="file" id="batch-file-${datasetType}" accept=".csv,.xlsx,.xls" />
+            </div>
+          </div>
+          <div class="mt-3 d-flex gap-2">
+            <button class="btn btn-brand" onclick="batchPredict('${datasetType}')">Upload & Predict</button>
+            <small class="text-muted">We reuse your drop/encode steps and training stats for consistent preprocessing.</small>
+          </div>
+          <div id="batch-result-${datasetType}" class="mt-3"></div>
+        </div>
+      `;
 
       const box = document.getElementById(`${datasetType}-prediction`);
       box.innerHTML = html; box.style.display='block';
@@ -714,19 +736,17 @@
       } }
     }
 
-    // Global predict (needed for inline onclick)
+    // Single prediction
     window.makePrediction = function(datasetType){
       const modelName = document.getElementById(`model-select-${datasetType}`).value;
       const box = document.getElementById(`${datasetType}-prediction`);
       const inputData = {};
-      // numbers
       box.querySelectorAll('input[type="number"]').forEach(inp=>{
         const key = inp.id.replace(`-${datasetType}`, '');
         const v = parseFloat(inp.value); inputData[key] = Number.isFinite(v) ? v : 0;
       });
-      // categoricals
       box.querySelectorAll('select').forEach(sel=>{
-        if(sel.id===`model-select-${datasetType}`) return; // skip model selector
+        if(sel.id===`model-select-${datasetType}` || sel.id===`batch-model-select-${datasetType}`) return;
         const key = sel.id.replace(`-${datasetType}`, '');
         inputData[key] = sel.value;
       });
@@ -748,10 +768,77 @@
       const el = document.getElementById(`prediction-result-${datasetType}`); if(el) el.innerHTML = '';
     }
 
-    // ===== Draw ROC (kept simple) =====
-    // (handled inline in displayModelResults)
+    // Batch prediction
+    window.batchPredict = function(datasetType){
+      const modelSelect = document.getElementById(`batch-model-select-${datasetType}`) || document.getElementById(`model-select-${datasetType}`);
+      const modelName = modelSelect ? modelSelect.value : 'Random Forest';
+      const fileInput = document.getElementById(`batch-file-${datasetType}`);
+      const file = fileInput ? fileInput.files[0] : null;
+      if(!file){ alert('Please select a CSV/Excel file for batch prediction.'); return; }
 
-    // Hide overlay on first load (belt & suspenders)
+      showLoading('Batch Prediction', `Uploading ${file.name}…`);
+      const progId = simulateProgress(900);
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('dataset_type', datasetType);
+      formData.append('model_name', modelName);
+
+      fetch('/batch_predict', { method:'POST', body: formData })
+        .then(r=>r.json())
+        .then(data=>{
+          clearInterval(progId); updateProgress(100,'Predicted!'); setTimeout(hideLoading, 300);
+          if(!data.success){ alert(data.error || 'Batch prediction failed'); return; }
+          renderBatchTable(datasetType, data.columns, data.preview_rows, data.highlight_columns || [], data);
+        })
+        .catch(err=>{ clearInterval(progId); hideLoading(); console.error(err); alert('Batch error: '+err.message); });
+    }
+
+    function renderBatchTable(datasetType, columns, rows, highlightCols, meta){
+      const box = document.getElementById(`batch-result-${datasetType}`);
+      if(!box) return;
+      let html = `
+        <div class="alert alert-light border d-flex align-items-center justify-content-between">
+          <div>
+            <div><strong>${meta?.message || ''}</strong></div>
+            <div class="small text-muted">Highlighted: ${highlightCols.join(', ')}</div>
+          </div>
+          <div>
+            ${meta && meta.download_url ? `<a class="btn btn-sm btn-outline-success" href="${meta.download_url}" target="_blank" rel="noreferrer">Download CSV</a>` : ''}
+            ${(!meta || !meta.download_url) && meta && meta.download_filename ? `<a class="btn btn-sm btn-outline-success" href="/download/${meta.download_filename}" target="_blank" rel="noreferrer">Download CSV</a>` : ''}
+          </div>
+        </div>
+        <div class="table-responsive" style="max-height:420px; overflow:auto">
+          <table class="table table-sm table-striped align-middle">
+            <thead><tr>${columns.map(c=>`<th>${c}</th>`).join('')}</tr></thead>
+            <tbody>
+      `;
+      const isHL = (c)=> highlightCols.includes(c);
+      rows.forEach(r=>{
+        html += '<tr>';
+        columns.forEach(c=>{
+          const val = (r[c]===null || r[c]===undefined || r[c]==='') ? '–' : r[c];
+          if(c==='PREDICTION'){
+            html += `<td><span class="badge text-bg-primary">${val}</span></td>`;
+          } else if(c==='CONFIDENCE'){
+            const pct = (typeof val==='number') ? Math.max(0, Math.min(100, val*100)) : 0;
+            html += `<td style="min-width:140px">
+              <div class="d-flex align-items-center gap-2">
+                <div class="confidence-bar flex-grow-1"><div class="confidence-fill" style="width:${pct.toFixed(0)}%"></div></div>
+                <small class="text-muted">${pct.toFixed(0)}%</small>
+              </div>
+            </td>`;
+          } else {
+            html += `<td>${val}</td>`;
+          }
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+      box.innerHTML = html;
+    }
+
+    // Hide overlay on first load
     window.addEventListener('load', () => {
       const ov = document.getElementById('loadingOverlay');
       if (ov) ov.style.display = 'none';
